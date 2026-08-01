@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"e2m.local/core/internal/retirement"
 )
 
 func TestMountCoreRoutesKeepsSupplyAndConsoleInOneHandler(t *testing.T) {
@@ -37,6 +39,55 @@ func TestMountCoreRoutesKeepsSupplyAndConsoleInOneHandler(t *testing.T) {
 		if recorder.Code != test.wantStatus || recorder.Header().Get("X-Handler") != test.want {
 			t.Errorf("path %s: status=%d handler=%q", test.path, recorder.Code, recorder.Header().Get("X-Handler"))
 		}
+	}
+}
+
+func TestPoolRetirementIntervalReadsPositiveOverride(t *testing.T) {
+	t.Setenv("E2M_POOL_RETIREMENT_INTERVAL", "750ms")
+	if got := poolRetirementInterval(); got != 750*time.Millisecond {
+		t.Fatalf("poolRetirementInterval() = %s, want 750ms", got)
+	}
+}
+
+func TestPoolRetirementIntervalFallsBackOnInvalidOverride(t *testing.T) {
+	for _, value := range []string{"", "0s", "-1s", "not-a-duration"} {
+		t.Setenv("E2M_POOL_RETIREMENT_INTERVAL", value)
+		if got := poolRetirementInterval(); got != retirement.DefaultInterval {
+			t.Fatalf("poolRetirementInterval(%q) = %s, want %s", value, got, retirement.DefaultInterval)
+		}
+	}
+}
+
+func TestCoreWorkersIncludePoolRetirementRunner(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	workerStarted := make(chan struct{})
+	workers := buildCoreWorkers(
+		func(context.Context) {},
+		func(context.Context) {},
+		func(workerCtx context.Context) {
+			close(workerStarted)
+			<-workerCtx.Done()
+		},
+	)
+	if len(workers) != 3 {
+		t.Fatalf("buildCoreWorkers() returned %d workers, want 3", len(workers))
+	}
+	done := make(chan struct{})
+	go func() {
+		workers[2](ctx)
+		close(done)
+	}()
+	select {
+	case <-workerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("pool retirement worker was not runnable")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pool retirement worker did not stop with Core context")
 	}
 }
 

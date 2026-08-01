@@ -10,6 +10,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Row,
   Select,
   Space,
@@ -20,10 +21,12 @@ import {
 } from 'antd'
 import {
   CopyOutlined,
+  EditOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
   PlusOutlined,
   ReloadOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons'
 import { getActiveRole } from '../api/auth'
 import { useActiveRoleUser, useUsers } from '../api/hooks'
@@ -32,17 +35,32 @@ import {
   useCreatePlatformGroup,
   useCreatePlatformKey,
   useCreatePlatformUpstream,
+  useDeletePlatformGroup,
+  useDeletePlatformUpstream,
   usePlatformGroups,
   usePlatformKeys,
   usePlatformKeyValue,
   usePlatformUsage,
   usePlatformUpstreams,
   usePlatformWallet,
+  useTestPlatformUpstream,
+  useUpdatePlatformGroup,
+  useUpdatePlatformUpstream,
 } from '../api/platformDistributionHooks'
 import type { PlatformKeyInput } from '../api/endpoints'
-import type { PlatformApiKey, PlatformUsage, PlatformUpstream } from '../api/types'
+import type { PlatformApiKey, PlatformGroup, PlatformUsage, PlatformUpstream } from '../api/types'
 
 const yuan = (micros: number) => `¥${(micros / 1_000_000).toFixed(2)}`
+const parseLabels = (value: unknown) => {
+  const labels: Record<string, string> = {}
+  for (const entry of String(value ?? '').split(',')) {
+    const [rawKey, ...rawValue] = entry.split('=')
+    const key = rawKey?.trim()
+    const labelValue = rawValue.join('=').trim()
+    if (key && labelValue) labels[key] = labelValue
+  }
+  return labels
+}
 
 export default function PlatformDistribution() {
   const { message } = App.useApp()
@@ -59,12 +77,19 @@ export default function PlatformDistribution() {
   const keys = usePlatformKeys(targetUserId, Boolean(targetUserId))
   const usage = usePlatformUsage(targetUserId, Boolean(targetUserId))
   const createGroup = useCreatePlatformGroup()
+  const updateGroup = useUpdatePlatformGroup()
+  const deleteGroup = useDeletePlatformGroup()
   const createUpstream = useCreatePlatformUpstream()
+  const updateUpstream = useUpdatePlatformUpstream()
+  const deleteUpstream = useDeletePlatformUpstream()
+  const testUpstream = useTestPlatformUpstream()
   const createKey = useCreatePlatformKey()
   const keyValue = usePlatformKeyValue()
   const adjustWallet = useAdjustPlatformWallet()
   const [groupOpen, setGroupOpen] = useState(false)
+  const [editingGroupId, setEditingGroupId] = useState<string>()
   const [upstreamOpen, setUpstreamOpen] = useState(false)
+  const [editingUpstreamId, setEditingUpstreamId] = useState<string>()
   const [keyOpen, setKeyOpen] = useState(false)
   const [adjustOpen, setAdjustOpen] = useState(false)
   const [visibleKeyValues, setVisibleKeyValues] = useState<Record<string, string>>({})
@@ -72,6 +97,83 @@ export default function PlatformDistribution() {
   const [upstreamForm] = Form.useForm()
   const [keyForm] = Form.useForm()
   const [adjustForm] = Form.useForm()
+
+  const openNewGroup = () => {
+    setEditingGroupId(undefined)
+    groupForm.resetFields()
+    groupForm.setFieldsValue({ resource_class: 'economy', status: 'active' })
+    setGroupOpen(true)
+  }
+  const openEditGroup = (group: PlatformGroup) => {
+    setEditingGroupId(group.id)
+    groupForm.resetFields()
+    groupForm.setFieldsValue({
+      ...group,
+      models: (group.models ?? []).join(', '),
+      labels: Object.entries(group.labels ?? {})
+        .map(([key, value]) => `${key}=${value}`)
+        .join(', '),
+    })
+    setGroupOpen(true)
+  }
+  const openNewUpstream = () => {
+    setEditingUpstreamId(undefined)
+    upstreamForm.resetFields()
+    upstreamForm.setFieldsValue({
+      group_id: (groups.data ?? []).find((group) => group.status === 'active')?.id,
+      priority: 0,
+      weight: 1,
+      max_concurrency: 0,
+      capacity_percent: 100,
+      max_request_micros: 1,
+      status: 'active',
+    })
+    setUpstreamOpen(true)
+  }
+  const openEditUpstream = (upstream: PlatformUpstream) => {
+    const firstPrice = upstream.models.map((model) => upstream.prices?.[model]).find(Boolean)
+    setEditingUpstreamId(upstream.id)
+    upstreamForm.resetFields()
+    upstreamForm.setFieldsValue({
+      group_id: upstream.group_id,
+      name: upstream.name,
+      base_url: upstream.base_url,
+      api_key: undefined,
+      models: (upstream.models ?? []).join(', '),
+      input_price: firstPrice ? firstPrice.input_micros_per_million / 1_000_000 : 0,
+      output_price: firstPrice ? firstPrice.output_micros_per_million / 1_000_000 : 0,
+      priority: upstream.priority,
+      weight: upstream.weight,
+      max_concurrency: upstream.capacity?.max_concurrency,
+      capacity_percent: upstream.capacity?.capacity_percent,
+      max_request_micros: upstream.capacity?.max_request_micros
+        ? upstream.capacity.max_request_micros / 1_000_000
+        : undefined,
+      status: upstream.status,
+      labels: Object.entries(upstream.labels ?? {})
+        .map(([key, value]) => `${key}=${value}`)
+        .join(', '),
+    })
+    setUpstreamOpen(true)
+  }
+  const testAndLoadModels = async () => {
+    if (!editingUpstreamId) return
+    const result = await testUpstream.mutateAsync(editingUpstreamId)
+    if (result.ok && result.models?.length) {
+      upstreamForm.setFieldValue('models', result.models.join(', '))
+      message.info(`已从上游发现 ${result.models.length} 个模型，请确认后保存`)
+    }
+  }
+  const closeGroupModal = () => {
+    setGroupOpen(false)
+    setEditingGroupId(undefined)
+    groupForm.resetFields()
+  }
+  const closeUpstreamModal = () => {
+    setUpstreamOpen(false)
+    setEditingUpstreamId(undefined)
+    upstreamForm.resetFields()
+  }
 
   const groupMap = useMemo(
     () => new Map((groups.data ?? []).map((group) => [group.id, group])),
@@ -205,7 +307,7 @@ export default function PlatformDistribution() {
             bordered
             style={{ marginTop: 16 }}
             extra={
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => setGroupOpen(true)}>
+              <Button type="primary" icon={<PlusOutlined />} onClick={openNewGroup}>
                 新建分组
               </Button>
             }
@@ -232,7 +334,57 @@ export default function PlatformDistribution() {
                   dataIndex: 'models',
                   render: (v: string[]) => (v ?? []).join(', ') || '未限定',
                 },
-                { title: '状态', dataIndex: 'status' },
+                {
+                  title: '状态',
+                  dataIndex: 'status',
+                  render: (v: string) => (
+                    <Tag color={v === 'active' ? 'green' : v === 'retired' ? 'default' : 'orange'}>
+                      {v === 'active' ? '启用' : v === 'retired' ? '已退休' : '维护中'}
+                    </Tag>
+                  ),
+                },
+                {
+                  title: '操作',
+                  key: 'actions',
+                  render: (_: unknown, row: PlatformGroup) => (
+                    <Space size="small">
+                      <Button
+                        size="small"
+                        icon={<EditOutlined />}
+                        onClick={() => openEditGroup(row)}
+                      >
+                        编辑
+                      </Button>
+                      {row.status !== 'retired' ? (
+                        <Button
+                          size="small"
+                          loading={updateGroup.isPending}
+                          onClick={() =>
+                            updateGroup.mutate({
+                              id: row.id,
+                              input: { status: row.status === 'active' ? 'maintenance' : 'active' },
+                            })
+                          }
+                        >
+                          {row.status === 'active' ? '停用' : '启用'}
+                        </Button>
+                      ) : null}
+                      {row.status !== 'retired' ? (
+                        <Popconfirm
+                          title="确认退休此分组？"
+                          description="退休后不会再接受新的请求，历史账务仍会保留。"
+                          okText="确认退休"
+                          cancelText="取消"
+                          onConfirm={() => deleteGroup.mutate(row.id)}
+                        >
+                          <Button size="small" danger loading={deleteGroup.isPending}>
+                            退休
+                          </Button>
+                        </Popconfirm>
+                      ) : null}
+                    </Space>
+                  ),
+                },
               ]}
             />
           </ProCard>
@@ -243,8 +395,8 @@ export default function PlatformDistribution() {
             extra={
               <Button
                 icon={<PlusOutlined />}
-                onClick={() => setUpstreamOpen(true)}
-                disabled={!groups.data?.length}
+                onClick={openNewUpstream}
+                disabled={!(groups.data ?? []).some((group) => group.status === 'active')}
               >
                 接入上游
               </Button>
@@ -277,7 +429,68 @@ export default function PlatformDistribution() {
                 {
                   title: '状态',
                   dataIndex: 'status',
-                  render: (v: string) => <Tag color={v === 'active' ? 'green' : 'orange'}>{v}</Tag>,
+                  render: (v: string) => (
+                    <Tag color={v === 'active' ? 'green' : v === 'retired' ? 'default' : 'orange'}>
+                      {v === 'active' ? '启用' : v === 'retired' ? '已退休' : '维护中'}
+                    </Tag>
+                  ),
+                },
+                { title: '优先级', dataIndex: 'priority' },
+                { title: '权重', dataIndex: 'weight' },
+                {
+                  title: '容量',
+                  render: (_: unknown, row: PlatformUpstream) =>
+                    `${row.capacity?.capacity_percent ?? 100}% / ${row.capacity?.max_concurrency || '不限'}`,
+                },
+                {
+                  title: '操作',
+                  key: 'actions',
+                  render: (_: unknown, row: PlatformUpstream) => (
+                    <Space size="small" wrap>
+                      <Button
+                        size="small"
+                        icon={<EditOutlined />}
+                        onClick={() => openEditUpstream(row)}
+                      >
+                        编辑
+                      </Button>
+                      <Button
+                        size="small"
+                        icon={<ThunderboltOutlined />}
+                        loading={testUpstream.isPending && testUpstream.variables === row.id}
+                        onClick={() => testUpstream.mutate(row.id)}
+                      >
+                        测试
+                      </Button>
+                      {row.status !== 'retired' ? (
+                        <Button
+                          size="small"
+                          loading={updateUpstream.isPending}
+                          onClick={() =>
+                            updateUpstream.mutate({
+                              id: row.id,
+                              input: { status: row.status === 'active' ? 'maintenance' : 'active' },
+                            })
+                          }
+                        >
+                          {row.status === 'active' ? '停用' : '启用'}
+                        </Button>
+                      ) : null}
+                      {row.status !== 'retired' ? (
+                        <Popconfirm
+                          title="确认下线此上游？"
+                          description="上游将停止接收新请求，凭证和审计记录会保留。"
+                          okText="确认下线"
+                          cancelText="取消"
+                          onConfirm={() => deleteUpstream.mutate(row.id)}
+                        >
+                          <Button size="small" danger loading={deleteUpstream.isPending}>
+                            下线
+                          </Button>
+                        </Popconfirm>
+                      ) : null}
+                    </Space>
+                  ),
                 },
               ]}
             />
@@ -409,25 +622,30 @@ export default function PlatformDistribution() {
       </ProCard>
 
       <Modal
-        title="新建平台分组"
+        title={editingGroupId ? '编辑平台分组' : '新建平台分组'}
         open={groupOpen}
-        onCancel={() => setGroupOpen(false)}
-        confirmLoading={createGroup.isPending}
+        onCancel={closeGroupModal}
+        confirmLoading={createGroup.isPending || updateGroup.isPending}
         onOk={() => groupForm.submit()}
       >
         <Form
           form={groupForm}
           layout="vertical"
           onFinish={async (values) => {
-            await createGroup.mutateAsync({
+            const input = {
               ...values,
+              labels: parseLabels(values.labels),
               models: String(values.models ?? '')
                 .split(',')
                 .map((model) => model.trim())
                 .filter(Boolean),
-            })
-            setGroupOpen(false)
-            groupForm.resetFields()
+            }
+            if (editingGroupId) {
+              await updateGroup.mutateAsync({ id: editingGroupId, input })
+            } else {
+              await createGroup.mutateAsync(input)
+            }
+            closeGroupModal()
           }}
           initialValues={{ resource_class: 'economy', status: 'active' }}
         >
@@ -448,39 +666,98 @@ export default function PlatformDistribution() {
           <Form.Item name="models" label="模型（逗号分隔）">
             <Input placeholder="gpt-4o-mini, claude-3-5-sonnet" />
           </Form.Item>
+          <Form.Item name="region" label="区域">
+            <Input placeholder="可选，例如 cn 或 us" />
+          </Form.Item>
+          <Form.Item name="description" label="描述">
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="labels" label="标签（key=value，逗号分隔）">
+            <Input placeholder="tier=premium, owner=ops" />
+          </Form.Item>
+          {editingGroupId ? (
+            <Form.Item name="status" label="状态">
+              <Select
+                options={[
+                  { value: 'active', label: '启用' },
+                  { value: 'maintenance', label: '维护中' },
+                ]}
+              />
+            </Form.Item>
+          ) : null}
         </Form>
       </Modal>
       <Modal
-        title="接入平台上游"
+        title={editingUpstreamId ? '编辑平台上游' : '接入平台上游'}
         open={upstreamOpen}
-        onCancel={() => setUpstreamOpen(false)}
-        confirmLoading={createUpstream.isPending}
+        onCancel={closeUpstreamModal}
+        confirmLoading={createUpstream.isPending || updateUpstream.isPending}
         onOk={() => upstreamForm.submit()}
       >
         <Form
           form={upstreamForm}
           layout="vertical"
           onFinish={async (values) => {
-            const model = values.model.trim()
-            await createUpstream.mutateAsync({
-              group_id: values.group_id,
-              name: values.name,
-              base_url: values.base_url,
-              api_key: values.api_key,
-              models: [model],
-              prices: {
-                [model]: {
+            const models = String(values.models ?? values.model ?? '')
+              .split(',')
+              .map((model) => model.trim())
+              .filter(Boolean)
+            const prices = Object.fromEntries(
+              models.map((model) => [
+                model,
+                {
                   input_micros_per_million: Math.round((values.input_price || 0) * 1_000_000),
                   output_micros_per_million: Math.round((values.output_price || 0) * 1_000_000),
                 },
+              ]),
+            )
+            const input = {
+              group_id: values.group_id,
+              name: values.name,
+              base_url: values.base_url,
+              ...(values.api_key ? { api_key: values.api_key } : {}),
+              models,
+              prices,
+              priority: values.priority,
+              weight: values.weight,
+              status: values.status,
+              labels: parseLabels(values.labels),
+              capacity: {
+                max_concurrency: values.max_concurrency || 0,
+                capacity_percent: values.capacity_percent ?? 100,
+                max_request_micros: Math.round((values.max_request_micros || 1) * 1_000_000),
               },
-            })
-            setUpstreamOpen(false)
-            upstreamForm.resetFields()
+            }
+            if (editingUpstreamId) {
+              await updateUpstream.mutateAsync({ id: editingUpstreamId, input })
+            } else {
+              await createUpstream.mutateAsync({ ...input, api_key: values.api_key as string })
+            }
+            closeUpstreamModal()
+          }}
+          initialValues={{
+            priority: 0,
+            weight: 1,
+            capacity_percent: 100,
+            max_request_micros: 1,
+            status: 'active',
           }}
         >
+          <Alert
+            type="info"
+            showIcon
+            message="当前数据面支持 OpenAI-compatible API（Bearer 凭证与 /v1/chat/completions）；其他协议需先接入适配器。"
+            style={{ marginBottom: 16 }}
+          />
           <Form.Item name="group_id" label="平台分组" rules={[{ required: true }]}>
-            <Select options={(groups.data ?? []).map((g) => ({ value: g.id, label: g.name }))} />
+            <Select
+              disabled={Boolean(editingUpstreamId)}
+              options={(groups.data ?? []).map((g) => ({
+                value: g.id,
+                label: g.name,
+                disabled: g.status !== 'active',
+              }))}
+            />
           </Form.Item>
           <Form.Item name="name" label="名称" rules={[{ required: true }]}>
             <Input />
@@ -488,11 +765,28 @@ export default function PlatformDistribution() {
           <Form.Item name="base_url" label="Base URL" rules={[{ required: true }]}>
             <Input placeholder="https://api.example.com/v1" />
           </Form.Item>
-          <Form.Item name="api_key" label="上游 API Key" rules={[{ required: true }]}>
-            <Input.Password />
+          <Form.Item
+            name="api_key"
+            label={editingUpstreamId ? '上游 API Key（留空表示不更换）' : '上游 API Key'}
+            rules={editingUpstreamId ? [] : [{ required: true }]}
+          >
+            <Input.Password autoComplete="new-password" />
           </Form.Item>
-          <Form.Item name="model" label="模型" rules={[{ required: true }]}>
-            <Input />
+          <Form.Item label="模型（逗号分隔）" required>
+            <Space.Compact style={{ width: '100%' }}>
+              <Form.Item name="models" noStyle rules={[{ required: true }]}>
+                <Input placeholder="gpt-4o-mini, gpt-4.1-mini" />
+              </Form.Item>
+              {editingUpstreamId ? (
+                <Button
+                  icon={<ThunderboltOutlined />}
+                  loading={testUpstream.isPending}
+                  onClick={() => void testAndLoadModels()}
+                >
+                  测试并拉取
+                </Button>
+              ) : null}
+            </Space.Compact>
           </Form.Item>
           <Space>
             <Form.Item
@@ -510,6 +804,36 @@ export default function PlatformDistribution() {
               <InputNumber min={0} />
             </Form.Item>
           </Space>
+          <Space wrap>
+            <Form.Item name="priority" label="优先级">
+              <InputNumber min={0} precision={0} />
+            </Form.Item>
+            <Form.Item name="weight" label="权重">
+              <InputNumber min={0} precision={0} />
+            </Form.Item>
+            <Form.Item name="max_concurrency" label="最大并发">
+              <InputNumber min={0} precision={0} />
+            </Form.Item>
+            <Form.Item name="capacity_percent" label="容量百分比">
+              <InputNumber min={0} max={100} precision={0} />
+            </Form.Item>
+            <Form.Item name="max_request_micros" label="单请求上限（元）">
+              <InputNumber min={0.000001} precision={6} />
+            </Form.Item>
+          </Space>
+          {editingUpstreamId ? (
+            <Form.Item name="status" label="状态">
+              <Select
+                options={[
+                  { value: 'active', label: '启用' },
+                  { value: 'maintenance', label: '维护中' },
+                ]}
+              />
+            </Form.Item>
+          ) : null}
+          <Form.Item name="labels" label="标签（key=value，逗号分隔）">
+            <Input placeholder="region=cn, lane=primary" />
+          </Form.Item>
         </Form>
       </Modal>
       <Modal

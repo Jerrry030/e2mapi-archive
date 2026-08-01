@@ -173,9 +173,12 @@ export interface PlatformGroupInput {
   provider?: string
   models?: string[]
   region?: string
+  labels?: Record<string, string>
   status?: UpstreamPoolStatus
   resource_class: 'economy' | 'stable'
 }
+
+export type PlatformGroupUpdateInput = Partial<PlatformGroupInput>
 
 export interface PlatformUpstreamInput {
   group_id: string
@@ -188,9 +191,12 @@ export interface PlatformUpstreamInput {
   priority?: number
   weight?: number
   status?: UpstreamChannelStatus
+  labels?: Record<string, string>
   capacity?: { max_concurrency?: number; capacity_percent?: number; max_request_micros?: number }
   allow_insecure?: boolean
 }
+
+export type PlatformUpstreamUpdateInput = Partial<PlatformUpstreamInput>
 
 export interface PlatformKeyInput {
   user_id?: number
@@ -247,10 +253,25 @@ export const endpoints = {
   listPlatformGroups: () => apiClient.request<PlatformGroup[]>('/platform/groups'),
   createPlatformGroup: (body: PlatformGroupInput) =>
     apiClient.request<PlatformGroup>('/platform/groups', { method: 'POST', body }),
+  updatePlatformGroup: (id: string, body: PlatformGroupUpdateInput) =>
+    apiClient.request<PlatformGroup>(`/platform/groups/${id}`, { method: 'PUT', body }),
+  deletePlatformGroup: (id: string) =>
+    apiClient.request<{ id?: string; status?: string }>(`/platform/groups/${id}`, {
+      method: 'DELETE',
+    }),
   listPlatformUpstreams: (groupId?: string) =>
     apiClient.request<PlatformUpstream[]>('/platform/upstreams', { query: { group_id: groupId } }),
   createPlatformUpstream: (body: PlatformUpstreamInput) =>
     apiClient.request<PlatformUpstream>('/platform/upstreams', { method: 'POST', body }),
+  updatePlatformUpstream: (id: string, body: PlatformUpstreamUpdateInput) =>
+    apiClient.request<PlatformUpstream>(`/platform/upstreams/${id}`, { method: 'PUT', body }),
+  deletePlatformUpstream: (id: string) =>
+    apiClient.request<PlatformUpstream>(`/platform/upstreams/${id}`, { method: 'DELETE' }),
+  testPlatformUpstream: (id: string) =>
+    apiClient.request<import('./types').PlatformUpstreamTestResult>(
+      `/platform/upstreams/${id}/test`,
+      { method: 'POST' },
+    ),
   listPlatformKeys: (userId?: number) =>
     apiClient.request<PlatformApiKey[]>('/platform/api-keys', { query: { user_id: userId } }),
   createPlatformKey: (body: PlatformKeyInput) =>

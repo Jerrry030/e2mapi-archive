@@ -82,8 +82,11 @@ E2M login
 The initial route contract is:
 
 ```text
-POST /api/v1/platform/groups
-POST /api/v1/platform/upstreams
+GET/POST       /api/v1/platform/groups
+GET/PUT/DELETE /api/v1/platform/groups/{id}
+GET/POST       /api/v1/platform/upstreams
+GET/PUT/DELETE /api/v1/platform/upstreams/{id}
+POST           /api/v1/platform/upstreams/{id}/test
 POST /api/v1/platform/keys
 GET  /api/v1/platform/keys/{id}/value
 POST /api/v1/platform/wallet-adjustments
@@ -96,6 +99,15 @@ to one E2M user and one group; it never reveals an upstream credential. Normal
 OpenAI-compatible response semantics, including SSE, are preserved. Failure
 transfer is limited to retryable failures and healthy, compatible accounts in
 the same group.
+
+Platform DELETE routes are lifecycle operations, not destructive row deletes:
+an upstream is disabled and quarantined while its credential and audit trail
+remain, and a group enters the durable retirement workflow. The upstream test
+route uses the Vault-backed credential only inside Core and exposes sanitized
+connectivity/model-catalog results. Core continuously resumes durable group
+retirement jobs, including after process restarts. The active data plane remains
+OpenAI-compatible; adding a provider label does not imply Anthropic, Gemini,
+OAuth, or other protocol support.
 
 Ordinary key list and detail responses contain only a prefix and non-secret
 metadata; they never return the full key, Vault reference, or validation hash.

@@ -1,10 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +22,8 @@ import (
 
 const defaultPlatformMaxRequestMicros int64 = 1_000_000
 
+const platformUpstreamTestTimeout = 10 * time.Second
+
 // registerPlatformDistributionRoutes exposes E2M's native distribution
 // management surface. These routes manage the same store and vault used by the
 // in-process OpenAI-compatible gateway; no external Sub2API service is involved.
@@ -26,11 +32,14 @@ func (s *Server) registerPlatformDistributionRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/v1/platform/groups", s.handleCreatePlatformGroup)
 	api.HandleFunc("GET /api/v1/platform/groups/{id}", s.handleGetPlatformGroup)
 	api.HandleFunc("PUT /api/v1/platform/groups/{id}", s.handleUpdatePlatformGroup)
+	api.HandleFunc("DELETE /api/v1/platform/groups/{id}", s.handleDeletePlatformGroup)
 
 	api.HandleFunc("GET /api/v1/platform/upstreams", s.handleListPlatformUpstreams)
 	api.HandleFunc("POST /api/v1/platform/upstreams", s.handleCreatePlatformUpstream)
 	api.HandleFunc("GET /api/v1/platform/upstreams/{id}", s.handleGetPlatformUpstream)
 	api.HandleFunc("PUT /api/v1/platform/upstreams/{id}", s.handleUpdatePlatformUpstream)
+	api.HandleFunc("DELETE /api/v1/platform/upstreams/{id}", s.handleDeletePlatformUpstream)
+	api.HandleFunc("POST /api/v1/platform/upstreams/{id}/test", s.handleTestPlatformUpstream)
 
 	// /keys is the concise public name. /api-keys is retained as an explicit
 	// alias for clients whose resource naming distinguishes login and API keys.
@@ -208,6 +217,44 @@ func (s *Server) handleUpdatePlatformGroup(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, saved)
 }
 
+// handleDeletePlatformGroup deliberately starts the existing retirement
+// workflow instead of removing a group row. A group can already have issued
+// virtual keys, reservations, usage, and published routes; a hard delete would
+// violate those records' foreign keys and could strand active traffic.
+func (s *Server) handleDeletePlatformGroup(w http.ResponseWriter, r *http.Request) {
+	setNoStore(w)
+	if !requirePlatformAdmin(w, r) {
+		return
+	}
+	group, err := s.platformGroup(r, strings.TrimSpace(r.PathValue("id")))
+	if err != nil {
+		writePlatformStoreError(w, err)
+		return
+	}
+	lifecycle, ok := s.lifecycleStore(w)
+	if !ok {
+		return
+	}
+	job, err := lifecycle.CreatePoolRetirementJob(r.Context(), group.ID, currentUser(r).ID)
+	if err != nil {
+		writeLifecycleError(w, err)
+		return
+	}
+	// No route plan means there is nothing external to drain. Complete the
+	// retirement synchronously so a newly-created, unused group does not remain
+	// stuck in maintenance waiting for a worker. Groups with published plans keep
+	// the durable job pending; the ordinary retirement runner owns their drain.
+	if job.TotalPlans == 0 {
+		job, err = lifecycle.FinalizePoolRetirementJob(r.Context(), job.ID)
+		if err != nil {
+			writeLifecycleError(w, err)
+			return
+		}
+	}
+	s.auditUpstream(r, 0, "platform_group.retirement_create", "upstream_pool", group.ID)
+	writeJSON(w, http.StatusAccepted, job)
+}
+
 func applyPlatformGroupRequest(group *contracts.UpstreamPool, input platformGroupRequest) {
 	if input.Description != nil {
 		group.Description = strings.TrimSpace(*input.Description)
@@ -317,6 +364,7 @@ type platformUpstreamResponse struct {
 	Weight           int                              `json:"weight"`
 	Status           contracts.UpstreamChannelStatus  `json:"status"`
 	Enabled          bool                             `json:"enabled"`
+	Labels           map[string]string                `json:"labels,omitempty"`
 	CreatedAt        time.Time                        `json:"created_at"`
 	UpdatedAt        time.Time                        `json:"updated_at"`
 }
@@ -413,6 +461,12 @@ func (s *Server) handleCreatePlatformUpstream(w http.ResponseWriter, r *http.Req
 	endpoint.SecretRef = "credential_ref:system/platform/upstream/" + created.ID
 	endpoint.MaskedValue = maskAssignedKey(input.APIKey)
 	if _, err := s.secrets.Store(r.Context(), endpoint.SecretRef, input.APIKey); err != nil {
+		// The channel row has already been created. Quarantine it so a failed
+		// Vault write can never become schedulable supply; retaining the row
+		// preserves an auditable operator-visible record of the failed attempt.
+		created.Status = contracts.UpstreamChannelMaintenance
+		created.InventoryState = contracts.UpstreamInventoryQuarantined
+		_, _ = s.store.UpdateUpstreamChannel(r.Context(), created)
 		writeError(w, http.StatusInternalServerError, "vault_error", "upstream key could not be stored")
 		return
 	}
@@ -487,6 +541,171 @@ func (s *Server) handleUpdatePlatformUpstream(w http.ResponseWriter, r *http.Req
 	}
 	s.auditUpstream(r, 0, "platform_upstream.update", "upstream_channel", savedChannel.ID)
 	writeJSON(w, http.StatusOK, platformUpstreamView(group, savedChannel, savedEndpoint))
+}
+
+// handleDeletePlatformUpstream is a safe, reversible deletion: it drains the
+// channel from new routing work while retaining the credential reference and
+// immutable accounting history. Permanent channel removal is intentionally not
+// exposed because issued keys, reservations, and usage may still reference it.
+func (s *Server) handleDeletePlatformUpstream(w http.ResponseWriter, r *http.Request) {
+	setNoStore(w)
+	if !requirePlatformAdmin(w, r) {
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	channel, err := s.store.GetUpstreamChannel(r.Context(), id)
+	if err != nil {
+		writePlatformStoreError(w, err)
+		return
+	}
+	group, err := s.platformGroup(r, channel.PoolID)
+	if err != nil {
+		writePlatformStoreError(w, err)
+		return
+	}
+	endpoint, err := s.store.GetSupplyChannelEndpoint(r.Context(), channel.ID)
+	if err != nil {
+		writePlatformStoreError(w, err)
+		return
+	}
+	channel.Status = contracts.UpstreamChannelMaintenance
+	channel.InventoryState = contracts.UpstreamInventoryQuarantined
+	endpoint.Enabled = false
+	savedChannel, err := s.store.UpdateUpstreamChannel(r.Context(), channel)
+	if err != nil {
+		writePlatformStoreError(w, err)
+		return
+	}
+	savedEndpoint, err := s.store.UpsertSupplyChannelEndpoint(r.Context(), endpoint)
+	if err != nil {
+		writePlatformStoreError(w, err)
+		return
+	}
+	s.auditUpstream(r, 0, "platform_upstream.disable", "upstream_channel", savedChannel.ID)
+	writeJSON(w, http.StatusOK, platformUpstreamView(group, savedChannel, savedEndpoint))
+}
+
+type platformUpstreamTestResponse struct {
+	OK         bool     `json:"ok"`
+	StatusCode int      `json:"status_code,omitempty"`
+	LatencyMS  int64    `json:"latency_ms"`
+	ModelCount int      `json:"model_count,omitempty"`
+	Models     []string `json:"models,omitempty"`
+	ErrorCode  string   `json:"error_code,omitempty"`
+}
+
+// handleTestPlatformUpstream validates the stored credential against the
+// standard OpenAI model endpoint. The Vault value is used only to construct the
+// outbound Authorization header; it is never included in a response or error.
+func (s *Server) handleTestPlatformUpstream(w http.ResponseWriter, r *http.Request) {
+	setNoStore(w)
+	if !requirePlatformAdmin(w, r) {
+		return
+	}
+	if s.secrets == nil {
+		writeError(w, http.StatusServiceUnavailable, "vault_unavailable", "credential vault is not configured")
+		return
+	}
+	view, err := s.getPlatformUpstream(r, strings.TrimSpace(r.PathValue("id")))
+	if err != nil {
+		writePlatformStoreError(w, err)
+		return
+	}
+	endpoint, err := s.store.GetSupplyChannelEndpoint(r.Context(), view.ID)
+	if err != nil {
+		writePlatformStoreError(w, err)
+		return
+	}
+	secret, err := s.secrets.Resolve(r.Context(), endpoint.SecretRef)
+	if err != nil {
+		if errors.Is(err, vault.ErrNotFound) {
+			writeError(w, http.StatusServiceUnavailable, "credential_unavailable", "upstream credential is unavailable")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "vault_error", "upstream credential could not be resolved")
+		return
+	}
+	testURL, err := platformUpstreamModelsURL(endpoint.BaseURL, endpoint.AllowInsecure)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", "upstream URL is invalid")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), platformUpstreamTestTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", "upstream test request could not be created")
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+secret.Value)
+	req.Header.Set("Accept", "application/json")
+	started := time.Now()
+	client := &http.Client{Timeout: platformUpstreamTestTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Do(req)
+	latency := time.Since(started).Milliseconds()
+	if err != nil {
+		s.auditUpstreamResult(r, 0, "platform_upstream.test", "upstream_channel", view.ID, "rejected", "transport_error")
+		writeJSON(w, http.StatusOK, platformUpstreamTestResponse{OK: false, LatencyMS: latency, ErrorCode: "transport_error"})
+		return
+	}
+	defer resp.Body.Close()
+	result := platformUpstreamTestResponse{OK: resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices, StatusCode: resp.StatusCode, LatencyMS: latency}
+	if result.OK {
+		var payload struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if readErr != nil || len(body) >= 1<<20 || json.Unmarshal(body, &payload) != nil {
+			result.OK = false
+			result.ErrorCode = "invalid_models_response"
+		} else {
+			models := make([]string, 0, len(payload.Data))
+			for _, model := range payload.Data {
+				models = append(models, model.ID)
+			}
+			models = normalizedModels(models)
+			if len(models) > 100 {
+				models = models[:100]
+			}
+			if !validPlatformModels(models) {
+				result.OK = false
+				result.ErrorCode = "invalid_models_response"
+				models = nil
+			}
+			result.Models = models
+			result.ModelCount = len(models)
+		}
+	} else {
+		// Do not copy the upstream body: providers commonly include diagnostic
+		// data that must not become a control-plane response.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8<<10))
+		result.ErrorCode = "upstream_models_rejected"
+	}
+	if result.OK {
+		s.auditUpstream(r, 0, "platform_upstream.test", "upstream_channel", view.ID)
+	} else {
+		s.auditUpstreamResult(r, 0, "platform_upstream.test", "upstream_channel", view.ID, "rejected", "models_request_failed")
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func platformUpstreamModelsURL(base string, allowInsecure bool) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || parsed.Scheme != "https" && !(allowInsecure && parsed.Scheme == "http") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("invalid upstream base URL")
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	if strings.HasSuffix(path, "/v1") {
+		path += "/models"
+	} else {
+		path += "/v1/models"
+	}
+	parsed.Path = path
+	return parsed.String(), nil
 }
 
 func (s *Server) platformUpstreamRecords(input platformUpstreamRequest, group contracts.UpstreamPool, current *contracts.UpstreamChannel, currentEndpoint *contracts.SupplyChannelEndpoint) (contracts.UpstreamChannel, contracts.SupplyChannelEndpoint, string) {
@@ -654,6 +873,7 @@ func platformUpstreamView(group contracts.UpstreamPool, channel contracts.Upstre
 		Models: append([]string(nil), channel.Models...), Prices: prices, Currency: endpoint.Currency,
 		Capacity: platformCapacityResponse{MaxConcurrency: endpoint.MaxConcurrency, CapacityPercent: endpoint.CapacityPercent, MaxRequestMicros: endpoint.MaxRequestMicros},
 		Priority: channel.Priority, Weight: channel.Weight, Status: channel.Status, Enabled: endpoint.Enabled,
+		Labels:    channel.Labels,
 		CreatedAt: channel.CreatedAt, UpdatedAt: channel.UpdatedAt,
 	}
 }

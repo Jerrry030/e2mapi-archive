@@ -48,13 +48,21 @@ E2M 是面向站长的统一 AI 资源管理与分发平台。当前产品只保
 首期平台管理契约：
 
 ```text
-POST /api/v1/platform/groups
-POST /api/v1/platform/upstreams
+GET/POST     /api/v1/platform/groups
+GET/PUT/DELETE /api/v1/platform/groups/{id}
+GET/POST     /api/v1/platform/upstreams
+GET/PUT/DELETE /api/v1/platform/upstreams/{id}
+POST         /api/v1/platform/upstreams/{id}/test
 POST /api/v1/platform/keys
 POST /api/v1/platform/wallet-adjustments
 GET  /api/v1/platform/usage
 POST /v1/chat/completions
 ```
+
+控制台支持分组和 OpenAI-compatible 上游的创建、编辑、启停与安全退役，
+并可通过服务端 Vault 凭证测试连接、发现模型。上游下线与分组删除均保留
+历史账务和审计记录，不执行破坏性硬删除；有关联路由的分组由 Core 后台
+持续排空并完成退役。
 
 “对下游保证成功交付”应落实为可测量的高成功率目标，而不是无条件承诺。系统可以通过健康筛选、同组重试和错误转移提高成功率，但无法在所有兼容上游均不可用、余额耗尽、模型不受支持或请求非法时伪造成功响应。
 

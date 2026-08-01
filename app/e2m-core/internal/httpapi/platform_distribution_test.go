@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"e2m.local/contracts"
+	"e2m.local/core/internal/store"
 	"e2m.local/core/internal/vault"
 )
 
@@ -180,6 +182,116 @@ func TestPlatformDistributionRejectsUnsafeOrAmbiguousInputs(t *testing.T) {
 		t.Fatalf("wallet adjustment must require idempotency: %d %s", missingIdempotency.Code, missingIdempotency.Body.String())
 	}
 }
+
+func TestPlatformUpstreamConnectionTestAndSafeDelete(t *testing.T) {
+	srv, st, authSvc := newTestServer(t)
+	srv.SetVault(vault.NewMemoryVault())
+	srv.EnableInsecureSupplyUpstreams()
+	admin := createLoginUser(t, authSvc, "platform-test-admin@example.com", contracts.UserRolePlatformAdmin)
+	token, _, _ := authSvc.Login(context.Background(), admin.Email, "password123")
+	handler := srv.Routes()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer connection-secret" {
+			http.Error(w, "bad request", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-test"}]}`))
+	}))
+	defer upstream.Close()
+
+	groupResponse := do(t, handler, http.MethodPost, "/api/v1/platform/groups", token, map[string]any{
+		"name": "connection test group", "models": []string{"gpt-test"}, "resource_class": "stable",
+	})
+	if groupResponse.Code != http.StatusCreated {
+		t.Fatalf("create group: %d %s", groupResponse.Code, groupResponse.Body.String())
+	}
+	var group contracts.UpstreamPool
+	if err := json.Unmarshal(groupResponse.Body.Bytes(), &group); err != nil {
+		t.Fatal(err)
+	}
+	upstreamResponse := do(t, handler, http.MethodPost, "/api/v1/platform/upstreams", token, map[string]any{
+		"group_id": group.ID, "name": "test upstream", "base_url": upstream.URL + "/v1", "api_key": "connection-secret",
+		"models": []string{"gpt-test"}, "prices": map[string]any{"gpt-test": map[string]any{"input_micros_per_million": 1, "output_micros_per_million": 1}},
+	})
+	if upstreamResponse.Code != http.StatusCreated {
+		t.Fatalf("create upstream: %d %s", upstreamResponse.Code, upstreamResponse.Body.String())
+	}
+	var view platformUpstreamResponse
+	if err := json.Unmarshal(upstreamResponse.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	testResponse := do(t, handler, http.MethodPost, "/api/v1/platform/upstreams/"+view.ID+"/test", token, nil)
+	if testResponse.Code != http.StatusOK || strings.Contains(testResponse.Body.String(), "connection-secret") {
+		t.Fatalf("connection test response leaked or failed: %d %s", testResponse.Code, testResponse.Body.String())
+	}
+	var result platformUpstreamTestResponse
+	if err := json.Unmarshal(testResponse.Body.Bytes(), &result); err != nil || !result.OK || result.ModelCount != 1 || len(result.Models) != 1 || result.Models[0] != "gpt-test" {
+		t.Fatalf("connection test result: err=%v result=%+v", err, result)
+	}
+
+	deleted := do(t, handler, http.MethodDelete, "/api/v1/platform/upstreams/"+view.ID, token, nil)
+	if deleted.Code != http.StatusOK || !strings.Contains(deleted.Body.String(), `"enabled":false`) {
+		t.Fatalf("safe upstream delete: %d %s", deleted.Code, deleted.Body.String())
+	}
+	endpoint, err := st.GetSupplyChannelEndpoint(context.Background(), view.ID)
+	if err != nil || endpoint.Enabled {
+		t.Fatalf("upstream endpoint should be disabled: err=%v endpoint=%+v", err, endpoint)
+	}
+	groupDelete := do(t, handler, http.MethodDelete, "/api/v1/platform/groups/"+group.ID, token, nil)
+	if groupDelete.Code != http.StatusAccepted {
+		t.Fatalf("group retirement: %d %s", groupDelete.Code, groupDelete.Body.String())
+	}
+	retired, err := st.GetUpstreamPool(context.Background(), group.ID)
+	if err != nil || retired.Status != contracts.UpstreamPoolRetired {
+		t.Fatalf("unused group should complete retirement immediately: err=%v group=%+v", err, retired)
+	}
+}
+
+func TestPlatformUpstreamCreateQuarantinesChannelWhenVaultStoreFails(t *testing.T) {
+	srv, st, authSvc := newTestServer(t)
+	srv.SetVault(failingPlatformVault{})
+	admin := createLoginUser(t, authSvc, "platform-vault-failure-admin@example.com", contracts.UserRolePlatformAdmin)
+	token, _, _ := authSvc.Login(context.Background(), admin.Email, "password123")
+	handler := srv.Routes()
+
+	groupResponse := do(t, handler, http.MethodPost, "/api/v1/platform/groups", token, map[string]any{
+		"name": "vault failure group", "models": []string{"gpt-test"}, "resource_class": "stable",
+	})
+	var group contracts.UpstreamPool
+	if groupResponse.Code != http.StatusCreated || json.Unmarshal(groupResponse.Body.Bytes(), &group) != nil {
+		t.Fatalf("create group: %d %s", groupResponse.Code, groupResponse.Body.String())
+	}
+	created := do(t, handler, http.MethodPost, "/api/v1/platform/upstreams", token, map[string]any{
+		"group_id": group.ID, "name": "failed credential", "base_url": "https://upstream.example/v1", "api_key": "never-stored",
+		"models": []string{"gpt-test"}, "prices": map[string]any{"gpt-test": map[string]any{"input_micros_per_million": 1, "output_micros_per_million": 1}},
+	})
+	if created.Code != http.StatusInternalServerError || strings.Contains(created.Body.String(), "never-stored") {
+		t.Fatalf("vault failure should be safe: %d %s", created.Code, created.Body.String())
+	}
+	channels, err := st.ListUpstreamChannels(context.Background(), group.ID)
+	if err != nil || len(channels) != 1 || channels[0].Status != contracts.UpstreamChannelMaintenance || channels[0].InventoryState != contracts.UpstreamInventoryQuarantined {
+		t.Fatalf("failed vault write must quarantine channel: err=%v channels=%+v", err, channels)
+	}
+	if _, err := st.GetSupplyChannelEndpoint(context.Background(), channels[0].ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("failed vault write must not persist endpoint, got %v", err)
+	}
+}
+
+type failingPlatformVault struct{}
+
+func (failingPlatformVault) Store(context.Context, string, string) (string, error) {
+	return "", errors.New("test vault store failed")
+}
+
+func (failingPlatformVault) Resolve(context.Context, string) (vault.Secret, error) {
+	return vault.Secret{}, vault.ErrNotFound
+}
+
+func (failingPlatformVault) Delete(context.Context, string) error { return nil }
+
+func (failingPlatformVault) ListRefs(context.Context) ([]string, error) { return nil, nil }
 
 func doWithIdempotency(t *testing.T, h http.Handler, method, path, token, idempotencyKey string, body any) *httptest.ResponseRecorder {
 	t.Helper()

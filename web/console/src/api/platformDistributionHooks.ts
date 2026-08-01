@@ -63,8 +63,51 @@ export function useCreatePlatformGroup() {
   return usePlatformMutation(endpoints.createPlatformGroup, '平台分组已创建')
 }
 
+export function useUpdatePlatformGroup() {
+  return usePlatformMutation(
+    ({ id, input }: { id: string; input: import('./endpoints').PlatformGroupUpdateInput }) =>
+      endpoints.updatePlatformGroup(id, input),
+    '平台分组已更新',
+  )
+}
+
+export function useDeletePlatformGroup() {
+  return usePlatformMutation(endpoints.deletePlatformGroup, '平台分组已进入安全退役流程')
+}
+
 export function useCreatePlatformUpstream() {
   return usePlatformMutation(endpoints.createPlatformUpstream, '上游已接入')
+}
+
+export function useUpdatePlatformUpstream() {
+  return usePlatformMutation(
+    ({ id, input }: { id: string; input: import('./endpoints').PlatformUpstreamUpdateInput }) =>
+      endpoints.updatePlatformUpstream(id, input),
+    '上游已更新',
+  )
+}
+
+export function useDeletePlatformUpstream() {
+  return usePlatformMutation(endpoints.deletePlatformUpstream, '上游已安全下线')
+}
+
+export function useTestPlatformUpstream() {
+  const { message } = App.useApp()
+  return useMutation({
+    mutationFn: endpoints.testPlatformUpstream,
+    onSuccess: (result) => {
+      if (result.ok) {
+        message.success(
+          `连接正常（${result.latency_ms} ms${result.model_count === undefined ? '' : `，${result.model_count} 个模型`}）`,
+        )
+      } else {
+        const reason =
+          result.error_code || (result.status_code ? `HTTP ${result.status_code}` : '上游不可达')
+        message.warning(`连接测试未通过：${reason}`)
+      }
+    },
+    onError: (error) => message.error(errorText(error)),
+  })
 }
 
 export function useCreatePlatformKey() {

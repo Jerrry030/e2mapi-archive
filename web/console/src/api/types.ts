@@ -667,7 +667,10 @@ export interface PlatformGroup {
   id: string
   name: string
   description?: string
+  provider?: string
   models: string[]
+  region?: string
+  labels?: Record<string, string>
   status: UpstreamPoolStatus
   resource_class: 'economy' | 'stable'
 }
@@ -695,8 +698,18 @@ export interface PlatformUpstream {
   weight: number
   status: UpstreamChannelStatus
   enabled: boolean
+  labels?: Record<string, string>
   created_at: string
   updated_at: string
+}
+
+export interface PlatformUpstreamTestResult {
+  ok: boolean
+  status_code?: number
+  latency_ms: number
+  model_count?: number
+  models?: string[]
+  error_code?: string
 }
 
 export interface PlatformWallet {

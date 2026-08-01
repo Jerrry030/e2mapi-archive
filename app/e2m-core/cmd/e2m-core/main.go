@@ -28,6 +28,7 @@ import (
 	"e2m.local/core/internal/operationalmetrics"
 	"e2m.local/core/internal/orchestrator"
 	"e2m.local/core/internal/publish"
+	"e2m.local/core/internal/retirement"
 	"e2m.local/core/internal/store"
 	"e2m.local/core/internal/supplygateway"
 	"e2m.local/core/internal/vault"
@@ -95,7 +96,7 @@ func run() error {
 	checker.SetEventSink(func(eventType string, userID int64, payload any) {
 		events.Publish(httpapi.StreamEvent{Type: eventType, UserID: userID, Payload: payload})
 	})
-	workers := []coreWorker{checker.Run, notify.NewWorker(st, router, notificationDeliveryInterval()).Run}
+	notifyWorker := notify.NewWorker(st, router, notificationDeliveryInterval())
 
 	// Console auth: bootstrap the first platform admin from env when the user
 	// table is empty.
@@ -114,6 +115,14 @@ func run() error {
 	// matches Core's owner-delivery key without moving either plaintext value.
 	keyVerifier := keyproof.New(st, v, orch)
 	publisher := publish.New(st, orch, publish.WithDeliveryKeyVerifier(keyVerifier))
+	// Pool retirement is a durable, multi-step workflow. Run it from the same
+	// Core process so a platform DELETE cannot leave a published pool stuck in
+	// maintenance until an operator manually invokes the legacy run endpoint.
+	var retirementWorker coreWorker
+	if lifecycle, ok := store.AsUpstreamLifecycleStore(st); ok {
+		retirementWorker = retirement.New(lifecycle, publisher, poolRetirementInterval()).Run
+	}
+	workers := buildCoreWorkers(checker.Run, notifyWorker.Run, retirementWorker)
 	server := httpapi.NewServer(st, orch, checker, nil, nil, authSvc, events, publisher)
 	server.SetVault(v)
 	server.SetDeliveryKeyVerifier(keyVerifier)
@@ -353,6 +362,25 @@ func notificationDeliveryInterval() time.Duration {
 		}
 	}
 	return time.Second
+}
+
+func poolRetirementInterval() time.Duration {
+	if value := strings.TrimSpace(os.Getenv("E2M_POOL_RETIREMENT_INTERVAL")); value != "" {
+		if parsed, err := time.ParseDuration(value); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return retirement.DefaultInterval
+}
+
+func buildCoreWorkers(checker, notification, poolRetirement coreWorker) []coreWorker {
+	workers := make([]coreWorker, 0, 3)
+	for _, worker := range []coreWorker{checker, notification, poolRetirement} {
+		if worker != nil {
+			workers = append(workers, worker)
+		}
+	}
+	return workers
 }
 
 type reconcileNotifier struct {

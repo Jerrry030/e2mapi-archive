@@ -20,6 +20,50 @@ function mockResponse(body: unknown, status = 200) {
 }
 
 describe('administrator operation endpoints', () => {
+  it('uses the platform distribution management routes', async () => {
+    const fetchMock = mockResponse({ id: 'platform-resource-1' })
+    const group = { name: 'Stable', resource_class: 'stable' as const, status: 'active' as const }
+    const upstream = {
+      name: 'OpenAI compatible',
+      models: ['gpt-4o-mini', 'gpt-4.1-mini'],
+      priority: 10,
+      weight: 2,
+      capacity: { max_concurrency: 20, capacity_percent: 80, max_request_micros: 1_000_000 },
+    }
+
+    await endpoints.updatePlatformGroup('group-1', group)
+    await endpoints.deletePlatformGroup('group-1')
+    await endpoints.updatePlatformUpstream('upstream-1', upstream)
+    await endpoints.testPlatformUpstream('upstream-1')
+    await endpoints.deletePlatformUpstream('upstream-1')
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/v1/platform/groups/group-1',
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify(group) }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/v1/platform/groups/group-1',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/v1/platform/upstreams/upstream-1',
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify(upstream) }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      '/api/v1/platform/upstreams/upstream-1/test',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      '/api/v1/platform/upstreams/upstream-1',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+  })
+
   it('uses the reference-compatible payment provider CRUD routes', async () => {
     const fetchMock = mockResponse({ id: 'payprov-1' })
     const create: CreatePaymentProviderInput = {

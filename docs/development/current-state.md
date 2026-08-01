@@ -57,11 +57,14 @@ Core is responsible for these product surfaces:
   and retry/failure transfer among compatible upstreams;
 - platform usage records and summaries exposed through E2M APIs.
 
-The first vertical-slice management contract is:
+The native platform management contract is:
 
 ```text
-POST /api/v1/platform/groups
-POST /api/v1/platform/upstreams
+GET/POST       /api/v1/platform/groups
+GET/PUT/DELETE /api/v1/platform/groups/{id}
+GET/POST       /api/v1/platform/upstreams
+GET/PUT/DELETE /api/v1/platform/upstreams/{id}
+POST           /api/v1/platform/upstreams/{id}/test
 POST /api/v1/platform/keys
 GET  /api/v1/platform/keys/{id}/value
 POST /api/v1/platform/wallet-adjustments
@@ -71,6 +74,14 @@ POST /v1/chat/completions
 
 These are E2M contracts. A client must never call a hidden third-party
 management API as part of provisioning or acceptance.
+
+Administrators can create and edit groups and OpenAI-compatible upstreams,
+toggle lifecycle state, safely retire groups or take upstreams offline, and
+test stored credentials against the upstream model catalog. Connection tests
+resolve the credential only inside Core, reject redirects, bound response size
+and latency, and return only sanitized status and model identifiers. Deletes
+preserve accounting and audit history instead of hard-deleting rows. Core's
+durable retirement worker automatically resumes group drains after restart.
 
 Platform key list and ordinary detail responses expose only the key prefix and
 non-secret metadata. The full value remains encrypted in the E2M Vault and is
@@ -169,8 +180,8 @@ restore a separate Sub2API process.
 
 The repository already contains mature Connector management, authentication,
 audit, notification, store, and upstream-related building blocks. Production
-hardening (capacity policy, richer model catalogs, payment, and later pool
-allocation) remains outside this first native forwarding slice.
+hardening (provider-specific protocol adapters, per-model pricing, payment,
+and later pool allocation) remains outside this native forwarding slice.
 
 ## Explicitly Out of Scope
 
