@@ -7,7 +7,7 @@ toolchain go1.26.4
 require (
 	e2m.local/contracts v0.0.0
 	github.com/golang-migrate/migrate/v4 v4.17.1
-	github.com/jackc/pgx/v5 v5.9.2
+	github.com/jackc/pgx/v5 v5.10.0
 	golang.org/x/crypto v0.20.0
 )
 
