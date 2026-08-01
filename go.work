@@ -1,0 +1,9 @@
+go 1.26
+
+toolchain go1.26.4
+
+use (
+	./app/e2m-agent
+	./app/e2m-core
+	./packages/e2m-contracts
+)

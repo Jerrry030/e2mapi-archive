@@ -1,0 +1,127 @@
+groups:
+  - name: e2m-upstream-intelligence
+    interval: 30s
+    rules:
+      - alert: E2MUpstreamIntelligenceMetricsMissing
+        expr: absent(e2m_upstream_sources)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: E2M upstream intelligence metrics are unavailable
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#metrics-missing
+
+      - alert: E2MUpstreamCostAttributionJobStuck
+        expr: e2m_upstream_cost_job_oldest_age_seconds > 900
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Oldest upstream cost-attribution job exceeds 15 minutes
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#cost-attribution-backlog
+
+      - alert: E2MConnectorTaskBacklogStuck
+        expr: e2m_connector_task_oldest_age_seconds > 900
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Oldest actionable Connector task exceeds 15 minutes
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#connector-task-backlog
+
+      - alert: E2MUpstreamEvidenceStale
+        expr: e2m_upstream_stale_evidence > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Current upstream evidence has exceeded its freshness window
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#stale-evidence
+
+      - alert: E2MUpstreamComparableCoverageLow
+        expr: e2m_upstream_fresh_comparable_coverage_ratio < 0.9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Fresh comparable upstream price coverage is below 90 percent
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#low-comparable-coverage
+
+      - alert: E2MUpstreamGlobalIngestFailure
+        expr: |
+          max without(instance, pod, job, state) (e2m_upstream_sources{state="active"}) > 0
+          and max without(instance, pod, job, state) (e2m_upstream_sources{state="failed"})
+            >= max without(instance, pod, job, state) (e2m_upstream_sources{state="active"})
+          and (
+            max without(instance, pod, job) (e2m_upstream_collection_last_success_age_seconds) > 900
+            or max without(instance, pod, job) (e2m_upstream_collection_sources_without_success)
+              >= max without(instance, pod, job, state) (e2m_upstream_sources{state="active"})
+          )
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: All active upstream intelligence sources are failing collection
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#global-ingest-failure
+
+      - alert: E2MUpstreamIntelligenceOutboxStuck
+        expr: |
+          e2m_upstream_intelligence_outbox_depth > 0
+          and e2m_upstream_intelligence_outbox_oldest_age_seconds > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: A Connector intelligence outbox has remained backlogged
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#intelligence-outbox-backlog
+
+      - alert: E2MUpstreamFalseRemovalInvariantViolation
+        expr: max without(instance, pod, job) (increase(e2m_upstream_false_removal_invariant_violations_total[5m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: An upstream false-removal safety invariant was violated
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#false-removal-invariant
+
+      - alert: E2MUpstreamCredentialLeakDetected
+        expr: max without(instance, pod, job) (increase(e2m_upstream_security_events_total{kind="credential_leak_detected"}[5m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Connector-sensitive data reached a prohibited Core boundary
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#credential-leak-detected
+
+      - alert: E2MUpstreamCrossOwnerRejectionAnomaly
+        expr: max without(instance, pod, job) (increase(e2m_upstream_security_events_total{kind="cross_owner_rejected"}[5m])) > 5
+        labels:
+          severity: critical
+        annotations:
+          summary: Cross-owner upstream requests exceeded the rejection threshold
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#cross-owner-rejection-anomaly
+
+      - alert: E2MRecommendationRolloutBlocked
+        expr: e2m_recommendation_rollouts{status="blocked"} > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: One or more recommendation rollouts are blocked
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#blocked-rollout
+
+      - alert: E2MRecommendationRolloutActionStuck
+        expr: e2m_recommendation_rollout_oldest_action_age_seconds > 600
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: A staged rollout or rollback has remained actionable too long
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#stuck-rollout-action
+
+      - alert: E2MRecommendationRollbackFailure
+        expr: e2m_recommendation_rollback_failures > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: A recommendation rollback has failed verification
+          runbook: docs/development/upstream-intelligence-operations-runbook.md#rollback-failure

@@ -1,0 +1,21 @@
+{
+  "name": "e2mapi-workspace",
+  "private": true,
+  "version": "0.2.0",
+  "engines": {
+    "node": ">=22.22.0 <25",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "prepare": "husky",
+    "commitlint": "commitlint --from=HEAD~1 --to=HEAD --verbose"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.0",
+    "@commitlint/config-conventional": "^21.2.0",
+    "husky": "^9.1.7"
+  },
+  "overrides": {
+    "fast-uri": "3.1.4"
+  }
+}

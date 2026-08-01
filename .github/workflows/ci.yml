@@ -1,0 +1,190 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: e2m-core (go vet + test)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+        env:
+          POSTGRES_USER: e2m_test
+          POSTGRES_PASSWORD: e2m_test
+          POSTGRES_DB: e2m_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U e2m_test -d e2m_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      E2M_TEST_POSTGRES_DSN: postgres://e2m_test:e2m_test@127.0.0.1:5432/e2m_test?sslmode=disable
+    defaults:
+      run:
+        working-directory: app/e2m-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache-dependency-path: app/e2m-core/go.sum
+      - name: gofmt check
+        working-directory: .
+        run: |
+          files=$(gofmt -l $(find app packages -name '*.go' -type f))
+          test -z "$files" || (echo "$files" && exit 1)
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -race ./...
+
+      - name: verify PostgreSQL tests ran
+        run: |
+          output=$(go test -run '^TestPostgres' -count=1 -v ./internal/store 2>&1)
+          printf '%s\n' "$output"
+          grep -q -- '--- PASS: TestPostgres' <<<"$output"
+          ! grep -q 'E2M_TEST_POSTGRES_DSN is not set' <<<"$output"
+
+  agent:
+    name: e2m-agent (go vet + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/e2m-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache-dependency-path: app/e2m-agent/go.mod
+      - name: gofmt check
+        working-directory: .
+        run: |
+          files=$(gofmt -l $(find app packages -name '*.go' -type f))
+          test -z "$files" || (echo "$files" && exit 1)
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -race ./...
+
+  contracts:
+    name: e2m-contracts (go vet + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/e2m-contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  console:
+    name: web console (tsc + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web/console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/console/package-lock.json
+      - name: install
+        run: npm ci
+      - name: lint
+        run: npm run lint
+      - name: format check
+        run: npm run format:check
+      - name: test
+        run: npm run test
+      - name: build (tsc -b + vite)
+        run: npm run build
+
+  powershell:
+    name: PowerShell acceptance scripts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: validate onboarding fixture
+        shell: powershell
+        run: .\scripts\test-seed-onboarding-real-gateways.ps1
+      - name: validate lifecycle fixture
+        shell: powershell
+        run: .\scripts\test-lifecycle-real-gateways.ps1
+
+  docker:
+    name: docker image smoke build
+    runs-on: ubuntu-latest
+    needs: [core, agent, contracts, console, powershell]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: validate real-gateway image locks
+        run: |
+          compose=deployments/templates/compose/e2m-core-real-gateways.compose.yml
+          docker compose -f "$compose" config >/dev/null
+          for image in POSTGRES_IMAGE REDIS_IMAGE SUB2API_IMAGE NEWAPI_IMAGE CPA_IMAGE GO_IMAGE NODE_IMAGE RUNTIME_IMAGE; do
+            reference=$(grep -F "\${$image:-" "$compose" | head -n 1)
+            digest=${reference##*@sha256:}
+            digest=${digest%%\}*}
+            if [ "${#digest}" -ne 64 ] || printf '%s' "$digest" | grep -Eq '[^0-9a-f]'; then
+              echo "$image must default to an immutable digest" >&2
+              exit 1
+            fi
+          done
+      - name: build e2m-core image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: app/e2m-core/Dockerfile
+          push: false
+          load: true
+          tags: e2m-core:ci
+          cache-from: type=gha,scope=e2m-core
+          cache-to: type=gha,mode=max,scope=e2m-core
+      - name: build e2m-agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: app/e2m-agent/Dockerfile
+          push: false
+          load: true
+          tags: e2m-agent:ci
+          cache-from: type=gha,scope=e2m-agent
+          cache-to: type=gha,mode=max,scope=e2m-agent
+      - name: smoke-test e2m-agent image
+        run: |
+          volume="e2m-agent-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker volume create "$volume"
+          container=$(docker run -d --mount "source=$volume,target=/var/lib/e2m-agent" e2m-agent:ci)
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sleep 2
+          test "$(docker inspect --format '{{.State.Running}}' "$container")" = "true"
+          docker exec "$container" /bin/sh -ec '
+            test "$(id -u)" -ne 0
+            test -w /var/lib/e2m-agent
+            printf smoke > /var/lib/e2m-agent/.image-smoke
+          '
+          test "$(docker run --rm --mount "source=$volume,target=/var/lib/e2m-agent" --entrypoint /bin/sh e2m-agent:ci -c 'cat /var/lib/e2m-agent/.image-smoke')" = "smoke"
+          docker logs "$container"

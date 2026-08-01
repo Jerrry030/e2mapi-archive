@@ -1,0 +1,115 @@
+# Minimal local E2M acceptance stack.
+#
+# E2M Core is the only product surface and owns both the management APIs and
+# the platform request data plane. Connector is intentionally absent: it is
+# installed only beside a customer's own gateway. No external distribution
+# service is started or exposed by this topology.
+#
+# Start, seed, and verify the stack with:
+#
+#   .\scripts\bootstrap-real-gateways.ps1
+
+name: e2m-real-gateways
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb}
+    environment:
+      POSTGRES_USER: e2m
+      POSTGRES_PASSWORD: e2m
+      POSTGRES_DB: e2m
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - e2m-real-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2m -d e2m"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # A disposable upstream fixture. It is reachable only from the Compose
+  # network; downstream validation always enters through E2M /v1/*.
+  mock-openai:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-core/cmd/mock-openai/Dockerfile
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    image: e2m-mock-openai:dev
+    environment:
+      MOCK_OPENAI_MODE: "success"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8093/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # The first-priority upstream in the failover drill. It accepts the request
+  # but deterministically returns HTTP 503 before any response is committed to
+  # the downstream client, so E2M must release its reservation and try the next
+  # compatible channel in the same group.
+  mock-openai-fail:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-core/cmd/mock-openai/Dockerfile
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    image: e2m-mock-openai:dev
+    environment:
+      MOCK_OPENAI_MODE: "retryable_failure"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8093/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  e2m-core:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-core/Dockerfile
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648}
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    image: e2m-core:dev
+    stop_grace_period: 90s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-openai:
+        condition: service_healthy
+      mock-openai-fail:
+        condition: service_healthy
+    environment:
+      E2M_CORE_ADDR: ":8080"
+      E2M_CORE_STORE: "postgres"
+      E2M_CORE_DATABASE_URL: "postgres://e2m:e2m@postgres:5432/e2m?sslmode=disable"
+      E2M_CORE_PUBLIC_URL: "http://localhost:18080"
+      E2M_ADMIN_EMAIL: "admin@local.dev"
+      E2M_ADMIN_PASSWORD: "admin123456"
+      E2M_CORE_VAULT: "file"
+      E2M_VAULT_KEY: "9d13ea091cde6d4177d8c9dbcb42db9348f7af976580d9523591d67f337799e1" # gitleaks:allow -- local fixture only
+      E2M_VAULT_PATH: "/data/vault.enc"
+      E2M_BALANCE_THRESHOLD: "10"
+      # The mock is an HTTP-only fixture on the private Compose network. This
+      # development switch is intentionally absent from production templates.
+      E2M_SUPPLY_ALLOW_INSECURE_UPSTREAMS: "true"
+    volumes:
+      - e2m-real-vault:/data
+    ports:
+      - "127.0.0.1:18080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  e2m-real-pgdata:
+  e2m-real-vault:

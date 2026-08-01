@@ -1,0 +1,12 @@
+ALTER TABLE instances DROP CONSTRAINT IF EXISTS instances_connector_binding_fkey;
+DROP INDEX IF EXISTS uq_connector_tasks_idempotency;
+DROP INDEX IF EXISTS idx_connector_tasks_user_created;
+DROP INDEX IF EXISTS idx_connector_tasks_connector_status;
+DROP TABLE IF EXISTS connector_tasks;
+DROP INDEX IF EXISTS idx_connector_enrollments_user_created;
+DROP INDEX IF EXISTS idx_connector_enrollments_active_instance;
+DROP INDEX IF EXISTS idx_connector_enrollments_active_connector;
+DROP TABLE IF EXISTS connector_enrollments;
+DROP INDEX IF EXISTS idx_connectors_token_hash;
+DROP INDEX IF EXISTS idx_connectors_user_status;
+DROP TABLE IF EXISTS connectors;

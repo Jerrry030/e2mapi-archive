@@ -1,0 +1,149 @@
+# Production stack for E2M Core: PostgreSQL + Core, with auth enabled,
+# the encrypted file vault, and NO mock gateways. From the repository root,
+# copy deployments/templates/compose/.env.example to
+# deployments/templates/compose/.env, fill in the required secrets, then:
+#
+#   docker compose -f deployments/templates/compose/e2m-core-prod.compose.yml --env-file deployments/templates/compose/.env up -d --build
+#
+# Core applies embedded migrations on startup and bootstraps the first platform
+# admin from E2M_ADMIN_EMAIL / E2M_ADMIN_PASSWORD (only when the user table is
+# empty). Create instances in the console, then install one outbound Connector
+# beside each gateway. Gateway addresses and management credentials remain in
+# the corresponding Connector's local data volume.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-e2m}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-e2m}
+    volumes:
+      - e2m-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-e2m} -d ${POSTGRES_DB:-e2m}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    # No published port: only Core reaches Postgres, over the compose network.
+
+  e2m-core:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-core/Dockerfile
+      args:
+        VITE_E2M_ENABLE_BILLING: ${E2M_ENABLE_BILLING:-false}
+        VITE_E2M_ENABLE_PAYMENTS: ${E2M_ENABLE_PAYMENTS:-false}
+        VITE_E2M_ENABLE_SUPPLY: ${E2M_ENABLE_SUPPLY:-false}
+    image: e2m-core:latest
+    restart: unless-stopped
+    stop_grace_period: 90s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      E2M_CORE_ADDR: ":8080"
+      E2M_CORE_STORE: "postgres"
+      E2M_CORE_DATABASE_URL: "postgres://${POSTGRES_USER:-e2m}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-e2m}?sslmode=disable"
+      # Shared across every Core replica. Keep old keys in the keyring for at
+      # least 15 minutes during rotation; only ACTIVE_KID signs new cursors.
+      E2M_UPSTREAM_INTELLIGENCE_CURSOR_ACTIVE_KID: ${E2M_UPSTREAM_INTELLIGENCE_CURSOR_ACTIVE_KID:?set cursor active kid in .env}
+      E2M_UPSTREAM_INTELLIGENCE_CURSOR_KEYS: ${E2M_UPSTREAM_INTELLIGENCE_CURSOR_KEYS:?set cursor keyring in .env}
+      # --- Recommendation lab and guarded rollout (forward writes fail closed) ---
+      E2M_UPSTREAM_RECOMMENDATIONS: ${E2M_UPSTREAM_RECOMMENDATIONS:-false}
+      # This flag blocks only rollout start/advance. Recovery list/get/rollback
+      # and the rollout Worker/Runner remain available when it is false.
+      E2M_UPSTREAM_OPTIMIZATION_AUTO_APPLY: ${E2M_UPSTREAM_OPTIMIZATION_AUTO_APPLY:-false}
+      E2M_RECOMMENDATION_ROLLOUT_OBSERVATION: ${E2M_RECOMMENDATION_ROLLOUT_OBSERVATION:-5m}
+      E2M_RECOMMENDATION_ROLLOUT_WORKER_INTERVAL: ${E2M_RECOMMENDATION_ROLLOUT_WORKER_INTERVAL:-1s}
+      E2M_RECOMMENDATION_ROLLOUT_WORKER_LEASE: ${E2M_RECOMMENDATION_ROLLOUT_WORKER_LEASE:-2m}
+      E2M_RECOMMENDATION_ROLLOUT_RUNNER_INTERVAL: ${E2M_RECOMMENDATION_ROLLOUT_RUNNER_INTERVAL:-1s}
+      # --- Auth: first admin (created once, when users table is empty) ---
+      E2M_ADMIN_EMAIL: ${E2M_ADMIN_EMAIL:?set E2M_ADMIN_EMAIL in .env}
+      E2M_ADMIN_PASSWORD: ${E2M_ADMIN_PASSWORD:?set E2M_ADMIN_PASSWORD in .env}
+
+      # --- Public client self-registration (closed by default) ---
+      E2M_AUTH_REGISTRATION_ENABLED: ${E2M_AUTH_REGISTRATION_ENABLED:-false}
+      E2M_AUTH_REGISTRATION_EMAIL_SUFFIXES: ${E2M_AUTH_REGISTRATION_EMAIL_SUFFIXES:-}
+      E2M_AUTH_TURNSTILE_ENABLED: ${E2M_AUTH_TURNSTILE_ENABLED:-false}
+      E2M_AUTH_TURNSTILE_SITE_KEY: ${E2M_AUTH_TURNSTILE_SITE_KEY:-}
+      E2M_AUTH_TURNSTILE_SECRET_KEY: ${E2M_AUTH_TURNSTILE_SECRET_KEY:-}
+
+      # --- Incomplete commercial modules: fail closed unless explicitly enabled ---
+      E2M_ENABLE_BILLING: ${E2M_ENABLE_BILLING:-false}
+      E2M_ENABLE_PAYMENTS: ${E2M_ENABLE_PAYMENTS:-false}
+      E2M_ENABLE_SUPPLY: ${E2M_ENABLE_SUPPLY:-false}
+      E2M_OWNER_KEY_REVEAL: "false"
+      E2M_SUPPLY_CURRENCY: ${E2M_SUPPLY_CURRENCY:-CNY}
+
+      # --- Connector enrollment ---
+      # Public URL used when generating per-instance install instructions.
+      E2M_CORE_PUBLIC_URL: ${E2M_CORE_PUBLIC_URL:-}
+
+      # --- Vault: AES-256-GCM encrypted file backend ---
+      # E2M_VAULT_KEY MUST be a stable 64-char hex string. Losing it loses every
+      # stored non-gateway credential. Keep it in a real secret manager.
+      E2M_CORE_VAULT: "file"
+      E2M_VAULT_KEY: ${E2M_VAULT_KEY:?set E2M_VAULT_KEY (64 hex chars) in .env}
+      E2M_VAULT_PATH: "/data/vault.enc"
+
+      # --- Health checker + auto-switch (W3) ---
+
+      # --- Observability: balance alerts + config-drift detection ---
+      # 0 disables balance alerts; set to your low-water mark (upstream units).
+      E2M_BALANCE_THRESHOLD: ${E2M_BALANCE_THRESHOLD:-0}
+      E2M_BALANCE_ALERT_COOLDOWN: "1h"
+
+      # --- Notifications (optional; leave unset to disable a channel) ---
+      E2M_FEISHU_WEBHOOK: ${E2M_FEISHU_WEBHOOK:-}
+      E2M_FEISHU_SECRET: ${E2M_FEISHU_SECRET:-}
+      E2M_QQ_ONEBOT_URL: ${E2M_QQ_ONEBOT_URL:-}
+      E2M_QQ_TOKEN: ${E2M_QQ_TOKEN:-}
+      E2M_QQ_GROUP_ID: ${E2M_QQ_GROUP_ID:-}
+
+      # --- Billing (integer cents) ---
+      E2M_BILL_INSTANCE_CENTS: ${E2M_BILL_INSTANCE_CENTS:-19900}
+      E2M_BILL_DISPOSITION_CENTS: ${E2M_BILL_DISPOSITION_CENTS:-100}
+      E2M_BILL_CURRENCY: ${E2M_BILL_CURRENCY:-CNY}
+    volumes:
+      - e2m-vault:/data
+    ports:
+      - "${E2M_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+
+  # Optional single-instance Connector example. Run one copy beside each
+  # gateway, with a unique enrollment file and data volume for that instance.
+  connector:
+    image: ${E2M_CONNECTOR_IMAGE:-ghcr.io/jerrry030/e2m-agent:latest}
+    restart: unless-stopped
+    profiles: ["connector"]
+    environment:
+      E2M_CORE_URL: ${E2M_CONNECTOR_CORE_URL:-http://e2m-core:8080}
+      E2M_CONNECTOR_ID: ${E2M_CONNECTOR_ID:-}
+      E2M_INSTANCE_ID: ${E2M_INSTANCE_ID:-}
+      E2M_CONNECTOR_ENABLED: "true"
+      E2M_CONNECTOR_ENROLL_TOKEN_FILE: "/run/secrets/e2m_connector_enrollment"
+      E2M_CONNECTOR_TOKEN_FILE: "/var/lib/e2m-agent/connector.token"
+      E2M_CONNECTOR_IDENTITY_FILE: "/var/lib/e2m-agent/connector-identity.json"
+      E2M_LOCAL_UI_ADDR: "0.0.0.0:18081"
+      E2M_LOCAL_UI_ALLOW_PRIVATE_PEERS: "true"
+    ports:
+      - "127.0.0.1:${E2M_CONNECTOR_UI_PORT:-18081}:18081"
+    volumes:
+      - e2m-connector-data:/var/lib/e2m-agent
+    secrets:
+      - e2m_connector_enrollment
+
+volumes:
+  e2m-pgdata:
+  e2m-vault:
+  e2m-connector-data:
+
+secrets:
+  e2m_connector_enrollment:
+    file: ${E2M_CONNECTOR_ENROLLMENT_FILE:-./secrets/e2m-connector-enrollment-token}

@@ -1,0 +1,2 @@
+DROP TRIGGER IF EXISTS trg_enforce_published_binding_execution_identity ON published_bindings;
+DROP FUNCTION IF EXISTS enforce_published_binding_execution_identity();

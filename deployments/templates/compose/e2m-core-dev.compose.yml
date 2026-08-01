@@ -1,0 +1,149 @@
+# Local development stack for E2M Core: PostgreSQL + Core (postgres mode)
+# + a mock sub2api for exercising the W2 account-switching path end to end.
+# Core applies embedded migrations on startup.
+#
+#   docker compose -f deployments/templates/compose/e2m-core-dev.compose.yml up --build -d
+#
+# After it's up, create one instance per mock gateway, generate each instance's
+# Connector install in the console, and configure that gateway through the
+# Connector's loopback-only local UI. Core never receives gateway coordinates or
+# management credentials.
+#
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    environment:
+      POSTGRES_USER: e2m
+      POSTGRES_PASSWORD: e2m
+      POSTGRES_DB: e2m
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - e2m-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2m -d e2m"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mock-sub2api:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-core/cmd/mock-sub2api/Dockerfile
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.26.4-alpine}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.21}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    image: mock-sub2api:dev
+    environment:
+      MOCK_SUB2API_ADDR: ":8090"
+      MOCK_SUB2API_KEY: "mock-admin-key"
+    ports:
+      - "127.0.0.1:8090:8090"
+
+  mock-newapi:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-core/cmd/mock-newapi/Dockerfile
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.26.4-alpine}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.21}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    image: mock-newapi:dev
+    environment:
+      MOCK_NEWAPI_ADDR: ":8091"
+      MOCK_NEWAPI_TOKEN: "mock-newapi-token"
+      MOCK_NEWAPI_UID: "1"
+    ports:
+      - "127.0.0.1:8091:8091"
+
+  mock-cpa:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-core/cmd/mock-cpa/Dockerfile
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.26.4-alpine}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.21}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    image: mock-cpa:dev
+    environment:
+      MOCK_CPA_ADDR: ":8092"
+      MOCK_CPA_KEY: "mock-cpa-key"
+    ports:
+      - "127.0.0.1:8092:8092"
+
+  e2m-core:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-core/Dockerfile
+      args:
+        GO_IMAGE: ${GO_IMAGE:-golang:1.26.4-alpine}
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-alpine}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-alpine:3.21}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+        VITE_E2M_ENABLE_BILLING: ${E2M_ENABLE_BILLING:-false}
+        VITE_E2M_ENABLE_PAYMENTS: ${E2M_ENABLE_PAYMENTS:-false}
+        VITE_E2M_ENABLE_SUPPLY: ${E2M_ENABLE_SUPPLY:-false}
+        VITE_E2M_ENABLE_HYBRID_SUPPLY: ${E2M_ENABLE_HYBRID_SUPPLY:-false}
+    image: e2m-core:dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      E2M_CORE_ADDR: ":8080"
+      E2M_CORE_STORE: "postgres"
+      E2M_CORE_DATABASE_URL: "postgres://e2m:e2m@postgres:5432/e2m?sslmode=disable"
+      # Fixed development-only cursor key. Never copy this key to production.
+      E2M_UPSTREAM_INTELLIGENCE_CURSOR_ACTIVE_KID: "dev-only"
+      E2M_UPSTREAM_INTELLIGENCE_CURSOR_KEYS: "dev-only=65326d2d646576656c6f706d656e742d637572736f722d6b65792d3030303121"
+      # Recommendation lab and real forward rollout stay closed in the normal
+      # dev stack. Rollout list/get/rollback remain available for recovery.
+      E2M_UPSTREAM_RECOMMENDATIONS: "false"
+      E2M_UPSTREAM_OPTIMIZATION_AUTO_APPLY: "false"
+      E2M_RECOMMENDATION_ROLLOUT_OBSERVATION: "5m"
+      E2M_RECOMMENDATION_ROLLOUT_WORKER_INTERVAL: "1s"
+      E2M_RECOMMENDATION_ROLLOUT_WORKER_LEASE: "2m"
+      E2M_RECOMMENDATION_ROLLOUT_RUNNER_INTERVAL: "1s"
+      # Console login (dev): first admin, created once on an empty DB.
+      # Log in at http://localhost:8080 with these credentials.
+      E2M_ADMIN_EMAIL: "admin@local.dev"
+      E2M_ADMIN_PASSWORD: "admin123456"
+      # Public client self-registration stays closed by default, even in dev.
+      E2M_AUTH_REGISTRATION_ENABLED: "false"
+      E2M_AUTH_REGISTRATION_EMAIL_SUFFIXES: ""
+      E2M_AUTH_TURNSTILE_ENABLED: "false"
+      E2M_AUTH_TURNSTILE_SITE_KEY: ""
+      E2M_AUTH_TURNSTILE_SECRET_KEY: ""
+      # Incomplete commercial modules remain closed in the normal dev stack.
+      E2M_ENABLE_BILLING: ${E2M_ENABLE_BILLING:-false}
+      E2M_ENABLE_PAYMENTS: ${E2M_ENABLE_PAYMENTS:-false}
+      E2M_ENABLE_SUPPLY: ${E2M_ENABLE_SUPPLY:-false}
+      E2M_ENABLE_HYBRID_SUPPLY: ${E2M_ENABLE_HYBRID_SUPPLY:-false}
+      E2M_HYBRID_ROUTING_WORKER_INTERVAL: ${E2M_HYBRID_ROUTING_WORKER_INTERVAL:-1s}
+      E2M_HYBRID_ROUTING_WORKER_LEASE: ${E2M_HYBRID_ROUTING_WORKER_LEASE:-2m}
+      E2M_OWNER_KEY_REVEAL: "false"
+      E2M_CORE_PUBLIC_URL: "http://localhost:8080"
+      # Shared encrypted development vault. Never copy this key to production.
+      E2M_CORE_VAULT: "file"
+      E2M_VAULT_KEY: ${E2M_VAULT_KEY:-dev-only-vault-key-change-before-production}
+      E2M_VAULT_PATH: "/data/vault.enc"
+      # W3 health checker + auto-switch (poll every 15s; switch after 2 bad checks).
+      # Balance alerts (mock-newapi ships channels at 4.20 / 88.40 / 200) +
+      # upstream config-drift detection.
+      E2M_BALANCE_THRESHOLD: "10"
+      # Set these to a real Feishu custom-bot webhook to receive auto-switch alerts:
+      # E2M_FEISHU_WEBHOOK: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxx"
+      # E2M_FEISHU_SECRET: "xxxx"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - e2m-vault:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  e2m-pgdata:
+  e2m-vault:

@@ -1,0 +1,15 @@
+.git
+.agents
+.codex
+**/.DS_Store
+**/.tmp
+**/tmp
+**/node_modules
+**/dist
+**/build
+**/coverage
+**/*.exe
+**/*.test
+**/*.log
+**/*.tsbuildinfo
+deployments/runtime

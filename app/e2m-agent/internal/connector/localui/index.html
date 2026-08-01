@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f8f6">
+  <title>E2M Connector 本地配置</title>
+  <link rel="stylesheet" href="/localui/app.css">
+  <script src="/localui/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#configContent">跳到配置内容</a>
+  <main class="shell">
+    <header class="topbar">
+      <div class="title-group">
+        <p class="eyebrow">E2M Connector</p>
+        <h1>Connector 本地配置</h1>
+      </div>
+      <div class="access-state" aria-label="本地配置状态">
+        <span class="access-label">本地配置</span>
+        <span class="badge" id="modeBadge" data-tone="loading">正在读取</span>
+      </div>
+    </header>
+
+    <section class="loading-state" id="loadingState" role="status" aria-live="polite">
+      <span class="spinner" aria-hidden="true"></span>
+      <div><strong>正在读取本地配置</strong></div>
+    </section>
+
+    <section class="access-gate" id="authGate" aria-labelledby="authGateTitle" hidden>
+      <div class="gate-icon" aria-hidden="true">!</div>
+      <div class="gate-copy">
+        <p class="section-kicker">本地配置暂不可用</p>
+        <h2 id="authGateTitle">未能读取 Connector 的本地配置</h2>
+        <p>请刷新页面重新建立本地会话；若问题持续，请检查 Connector 是否仍在运行。</p>
+        <div class="gate-note"><strong>网关运行不受影响</strong><span>页面加载失败不会修改已保存配置或网关凭据。</span></div>
+      </div>
+    </section>
+
+    <div id="configContent" hidden>
+      <section class="dirty-banner" id="dirtyBanner" role="status" aria-live="polite" hidden>
+        <div class="dirty-copy"><span class="dirty-dot" aria-hidden="true"></span><div><strong>候选配置有未保存的更改</strong><p id="dirtyMessage">测试只验证当前输入，不会写入磁盘或改变 Connector 运行配置。</p></div></div>
+        <div class="dirty-actions">
+          <button class="btn primary" type="submit" form="configForm" id="bannerSaveButton" disabled aria-label="保存并应用候选配置">保存并应用</button>
+          <button class="btn tertiary" type="button" id="discardButton">放弃更改</button>
+        </div>
+      </section>
+    <div class="layout">
+      <section class="panel config-panel" aria-labelledby="configTitle">
+        <div class="panel-header">
+          <div>
+            <p class="section-kicker">当前编辑</p>
+            <h2 id="configTitle">候选配置</h2>
+          </div>
+          <span class="state-pill" id="candidateStatus" data-tone="idle">尚未测试</span>
+        </div>
+
+        <form id="configForm" autocomplete="off" novalidate>
+          <fieldset class="config-fieldset" id="configFieldset" disabled>
+          <legend class="sr-only">Connector 候选配置</legend>
+          <section class="form-section" aria-labelledby="gatewaySectionTitle">
+          <div class="section-heading"><div><span class="step-number" aria-hidden="true">1</span><div><h3 id="gatewaySectionTitle">网关连接</h3></div></div></div>
+          <div class="form-grid">
+            <label class="field" for="gatewayKind">
+              <span>网关类型 <span class="required">*</span></span>
+              <select id="gatewayKind" name="gateway_kind" required>
+                <option value="sub2api">Sub2API</option>
+                <option value="newapi">New API</option>
+                <option value="cpa">CPA</option>
+              </select>
+            </label>
+            <label class="field" for="gatewayUrl">
+              <span>网关根地址（Base URL） <span class="required">*</span></span>
+              <input id="gatewayUrl" name="gateway_url" type="url" inputmode="url" spellcheck="false" placeholder="例如：http://sub2api:8080" aria-describedby="gatewayUrlHint gatewayUrlError" aria-errormessage="gatewayUrlError" required>
+              <small class="field-hint" id="gatewayUrlHint">Docker 内请填写容器可访问的地址，不要使用 localhost。</small>
+              <small class="field-error" id="gatewayUrlError" role="alert" hidden></small>
+            </label>
+          </div>
+
+          <div class="fixed-auth">
+            <span><small>网关认证方式</small><strong id="authLabel">x-api-key</strong></span>
+          </div>
+          </section>
+
+          <section class="form-section credential-section" aria-labelledby="credentialTitle">
+          <div class="section-heading"><div><span class="step-number" aria-hidden="true">2</span><div><h3 id="credentialTitle">网关凭据</h3></div></div><span class="privacy-chip">本地存储</span></div>
+
+          <div class="credential-panel" data-auth-panel="x-api-key">
+            <div class="secret-field">
+              <label class="field-label" for="xApiKey">x-api-key 凭据</label>
+              <div class="secret-input">
+                <input id="xApiKey" type="password" autocomplete="new-password" placeholder="输入新值；留空则保留已保存凭据" aria-describedby="credentialSafety credentialError">
+                <button class="secret-toggle" type="button" data-secret-toggle="xApiKey" aria-label="显示 x-api-key" title="显示 x-api-key">
+                  <svg class="icon-eye" aria-hidden="true" viewBox="0 0 24 24"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>
+                  <svg class="icon-eye-off" aria-hidden="true" viewBox="0 0 24 24" hidden><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.8 10.8 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>
+                </button>
+              </div>
+            </div>
+            <label class="clear-control"><input id="clearXApiKey" type="checkbox"><span><strong>保存时删除已存 x-api-key</strong><small>删除后网关请求将无法认证；如需替换，请取消删除并输入新值。</small></span></label>
+          </div>
+
+          <div class="credential-panel two-col" data-auth-panel="newapi" hidden>
+            <div class="credential-field">
+              <label class="field" for="newapiUser">
+                <span>NewAPI 用户 ID</span>
+                <input id="newapiUser" type="text" autocomplete="off" placeholder="输入新值；留空则保留已保存值" aria-describedby="credentialSafety credentialError">
+              </label>
+              <label class="clear-control"><input id="clearNewapiUser" type="checkbox"><span><strong>保存时删除已存用户 ID</strong><small>此操作会影响 New API 认证。</small></span></label>
+            </div>
+            <div class="credential-field">
+              <div class="secret-field">
+                <label class="field-label" for="newapiToken">NewAPI Token</label>
+                <div class="secret-input">
+                  <input id="newapiToken" type="password" autocomplete="new-password" placeholder="输入新值；留空则保留已保存凭据" aria-describedby="credentialSafety credentialError">
+                  <button class="secret-toggle" type="button" data-secret-toggle="newapiToken" aria-label="显示 NewAPI Token" title="显示 NewAPI Token">
+                    <svg class="icon-eye" aria-hidden="true" viewBox="0 0 24 24"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>
+                    <svg class="icon-eye-off" aria-hidden="true" viewBox="0 0 24 24" hidden><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.8 10.8 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>
+                  </button>
+                </div>
+              </div>
+              <label class="clear-control"><input id="clearNewapiToken" type="checkbox"><span><strong>保存时删除已存 Token</strong><small>删除后网关请求将无法认证。</small></span></label>
+            </div>
+          </div>
+
+          <div class="credential-panel" data-auth-panel="bearer" hidden>
+            <div class="secret-field">
+              <label class="field-label" for="bearerToken">Bearer Token</label>
+              <div class="secret-input">
+                <input id="bearerToken" type="password" autocomplete="new-password" placeholder="输入新值；留空则保留已保存凭据" aria-describedby="credentialSafety credentialError">
+                <button class="secret-toggle" type="button" data-secret-toggle="bearerToken" aria-label="显示 Bearer Token" title="显示 Bearer Token">
+                  <svg class="icon-eye" aria-hidden="true" viewBox="0 0 24 24"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>
+                  <svg class="icon-eye-off" aria-hidden="true" viewBox="0 0 24 24" hidden><path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.8 10.8 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/></svg>
+                </button>
+              </div>
+            </div>
+            <label class="clear-control"><input id="clearBearerToken" type="checkbox"><span><strong>保存时删除已存 Bearer Token</strong><small>删除后网关请求将无法认证。</small></span></label>
+          </div>
+
+          <p class="credential-safety" id="credentialSafety">凭据仅保存在本机；生产环境请使用 HTTPS。</p>
+          <p class="field-error credential-error" id="credentialError" role="alert" hidden></p>
+          </section>
+
+          <section class="form-section runtime-settings" aria-labelledby="runtimeTitle">
+            <div class="section-heading"><div><span class="step-number" aria-hidden="true">3</span>
+            <div class="runtime-copy">
+              <h3 id="runtimeTitle">运行设置</h3>
+            </div></div></div>
+            <div class="runtime-grid">
+            <label class="field" for="requestTimeout">
+              <span>网关请求超时</span>
+              <div class="number-control">
+                <input id="requestTimeout" type="number" min="5" max="20" step="1" value="15" aria-describedby="requestTimeoutHint requestTimeoutError" aria-errormessage="requestTimeoutError">
+                <span>秒</span>
+              </div>
+              <small class="field-hint" id="requestTimeoutHint">Connector 等待网关管理接口响应的最长时间。允许 5–20 秒，默认 15 秒。</small>
+              <small class="field-error" id="requestTimeoutError" role="alert" hidden></small>
+            </label>
+            <fieldset class="log-level-fieldset">
+              <legend>日志级别</legend>
+              <div class="segmented three" role="radiogroup" aria-label="日志级别">
+                <label><input type="radio" name="logLevel" value="error"><span>错误</span></label>
+                <label><input type="radio" name="logLevel" value="info" checked><span>常规</span></label>
+                <label><input type="radio" name="logLevel" value="debug"><span>调试</span></label>
+              </div>
+            </fieldset>
+            </div>
+          </section>
+
+          <div class="form-error" id="formError" role="alert" tabindex="-1" hidden><strong>暂时无法继续</strong><p></p></div>
+          <footer class="form-actions"><p id="actionHint">请先填写管理地址。</p><div class="actions"><button class="btn secondary" type="button" id="testButton" disabled>测试（不保存）</button><button class="btn primary" type="submit" id="saveButton" disabled>保存并应用</button></div></footer>
+          </fieldset>
+        </form>
+      </section>
+
+      <aside class="status-rail" aria-label="配置和运行状态">
+        <section class="panel rail-panel candidate-panel" aria-labelledby="statusHeading">
+        <div class="rail-header"><div><p class="section-kicker">当前编辑</p><h2 id="statusHeading">候选配置</h2></div></div>
+        <div class="status" id="statusBox" role="status" aria-live="polite" data-tone="idle">
+          <span class="status-dot" aria-hidden="true"></span>
+          <div><strong id="statusTitle">待配置</strong><p id="statusMessage"></p></div>
+        </div>
+        <dl class="meta-list candidate-meta">
+          <div><dt>网关类型</dt><dd id="previewKind">Sub2API</dd></div>
+          <div><dt>管理地址</dt><dd id="previewUrl">未填写</dd></div>
+          <div><dt>认证方式</dt><dd id="previewAuth">x-api-key</dd></div>
+          <div><dt>候选凭据</dt><dd id="previewCredential">未知</dd></div>
+        </dl>
+        <div class="test-result" aria-live="polite"><span>候选测试</span><strong id="candidateTestResult">尚未测试</strong><p id="candidateTestMeta"></p></div>
+        </section>
+
+        <section class="panel rail-panel saved-panel" aria-labelledby="savedHeading">
+          <div class="rail-header"><div><p class="section-kicker">Connector 当前使用</p><h2 id="savedHeading">已保存配置</h2></div><span class="state-pill" id="savedStatus" data-tone="loading">读取中</span></div>
+          <dl class="meta-list">
+            <div><dt>网关类型</dt><dd id="savedKind">读取中</dd></div>
+            <div><dt>管理地址</dt><dd id="savedUrl">读取中</dd></div>
+            <div><dt>认证方式</dt><dd id="savedAuth">读取中</dd></div>
+            <div><dt>凭据状态</dt><dd id="savedCredential">读取中</dd></div>
+            <div><dt>最近保存</dt><dd id="savedUpdatedAt">等待读取</dd></div>
+          </dl>
+        </section>
+
+        <section class="panel rail-panel health-panel" aria-labelledby="healthHeading">
+        <div class="rail-header"><div><p class="section-kicker">实际运行</p><h2 id="healthHeading">运行健康</h2></div><button class="btn secondary compact" type="button" id="coreTestButton" disabled>测试 Core</button></div>
+        <div class="health-state" id="runtimeHealth" data-tone="idle" role="status" aria-live="polite"><span class="health-icon" aria-hidden="true"></span><div><strong id="runtimeHealthTitle">等待运行数据</strong><p id="runtimeHealthMessage"></p></div></div>
+        <div class="diagnostic-header">
+          <div><h3>连接诊断</h3></div>
+          <span class="last-success">最近成功 <strong id="diagLastSuccess">暂无记录</strong></span>
+        </div>
+        <div class="diagnostic-empty" id="diagEmpty" hidden><strong>暂无诊断记录</strong></div>
+        <dl class="diagnostic-list">
+          <div><dt>Core 轮询</dt><dd id="diagCoreSync">暂无记录</dd></div>
+          <div><dt>Core 健康检查</dt><dd id="diagCoreTest">暂无记录</dd></div>
+          <div><dt>运行网关请求</dt><dd id="diagGatewayRequest">暂无记录</dd></div>
+          <div><dt>候选手动测试</dt><dd id="diagGatewayTest">暂无记录</dd></div>
+        </dl>
+        </section>
+      </aside>
+    </div>
+    </div>
+  </main>
+
+  <dialog class="confirm-dialog" id="clearConfirmDialog" aria-labelledby="clearConfirmTitle" aria-describedby="clearConfirmDescription">
+    <div class="dialog-card">
+      <div class="dialog-icon" aria-hidden="true">!</div>
+      <div class="dialog-content"><h2 id="clearConfirmTitle">确认删除已保存的网关凭据？</h2><p id="clearConfirmDescription">保存后这些凭据将从 Connector 数据目录中删除，网关请求可能立即失去认证能力。</p><ul class="clear-confirm-list" id="clearConfirmList"></ul><div class="dialog-warning"><strong>此操作无法从页面撤销</strong><span>如需恢复，你必须重新输入原始凭据并再次保存。</span></div></div>
+      <div class="dialog-actions"><button class="btn secondary" type="button" id="cancelClearButton">返回检查</button><button class="btn danger" type="button" id="confirmClearButton">确认删除并保存</button></div>
+    </div>
+  </dialog>
+</body>
+</html>

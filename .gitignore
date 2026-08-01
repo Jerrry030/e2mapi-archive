@@ -3,23 +3,40 @@
 Thumbs.db
 .idea/
 .vscode/
+.claude/settings.local.json
 
-# Logs
+# Logs and local run artifacts
 *.log
 logs/
+tmp/
+temp/
+deployments/runtime/
+*-local-command-caveat*.txt
+.tmp/
+runtime/
+ .tmp/
 
-# Environment
+# Environment and secrets
 .env
 .env.*
 !.env.example
 
-# Build outputs
+# Go
+bin/
+*.exe
+*.test
+coverage.out
+
+# Node / Vite
+node_modules/
 dist/
 build/
-tmp/
-temp/
+*.tsbuildinfo
 
-# Dependencies
-node_modules/
+# Keep the embedded web UI placeholder tracked; release builds populate the
+# remaining files locally and must not add generated bundles to source control.
+app/e2m-core/internal/webui/dist/*
+!app/e2m-core/internal/webui/dist/.gitkeep
+
+# Vendored dependencies are not used in this workspace.
 vendor/
-

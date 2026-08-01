@@ -1,0 +1,1 @@
+-- No-op: executable gateway capabilities are declared in code.

@@ -1,0 +1,3 @@
+-- Connector identity moved into 0019 so connector_tasks can carry real foreign
+-- keys in a freshly initialized database. This no-op version remains only to
+-- keep migration numbering contiguous.

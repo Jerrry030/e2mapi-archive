@@ -1,0 +1,188 @@
+# Disposable UI-17 weighted-rollout acceptance stack.
+#
+# This file intentionally has no top-level `name` and no globally named volume.
+# Always supply a freshly generated project with `docker compose -p ...` and a
+# dedicated E2M_UI17_RUNTIME_DIR. Never point that directory at real-gateways.
+
+services:
+  core-postgres:
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    environment:
+      POSTGRES_USER: e2m_ui17
+      POSTGRES_PASSWORD: e2m_ui17
+      POSTGRES_DB: e2m_ui17
+    ports:
+      - "127.0.0.1:${E2M_UI17_POSTGRES_PORT:-25432}:5432"
+    volumes:
+      - core-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2m_ui17 -d e2m_ui17"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  newapi-postgres:
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    environment:
+      POSTGRES_USER: newapi_ui17
+      POSTGRES_PASSWORD: newapi_ui17
+      POSTGRES_DB: newapi_ui17
+    volumes:
+      - newapi-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U newapi_ui17 -d newapi_ui17"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  newapi-redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    command: ["redis-server", "--requirepass", "ui17-disposable"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "ui17-disposable", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  newapi:
+    image: calciumion/new-api:latest@sha256:e8c18fdf4a94cc49979fe210dd39ca7643b03431675fd7de1097285750d3e46c
+    pull_policy: never
+    command: --log-dir /app/logs
+    depends_on:
+      newapi-postgres:
+        condition: service_healthy
+      newapi-redis:
+        condition: service_healthy
+      mock-openai:
+        condition: service_healthy
+    environment:
+      SQL_DSN: "postgresql://newapi_ui17:newapi_ui17@newapi-postgres:5432/newapi_ui17"
+      REDIS_CONN_STRING: "redis://:ui17-disposable@newapi-redis:6379"
+      TZ: "UTC"
+      ERROR_LOG_ENABLED: "true"
+      BATCH_UPDATE_ENABLED: "true"
+      NODE_NAME: "e2m-ui17-disposable-newapi"
+      SESSION_SECRET: "ui17-disposable-session-secret"
+    ports:
+      - "127.0.0.1:${E2M_UI17_NEWAPI_PORT:-23000}:3000"
+    volumes:
+      - newapi-data:/data
+      - newapi-logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/status | grep -o '\"success\":\\s*true' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  mock-openai:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-core/cmd/mock-openai/Dockerfile
+      args:
+        GO_IMAGE: golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648
+        RUNTIME_IMAGE: alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+        GOPROXY: https://goproxy.cn,direct
+    image: "${E2M_UI17_MOCK_OPENAI_IMAGE:?set E2M_UI17_MOCK_OPENAI_IMAGE to this disposable project's unique image tag}"
+    environment:
+      MOCK_OPENAI_ADDR: ":8093"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8093/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  e2m-core:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-core/Dockerfile
+      args:
+        GO_IMAGE: golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648
+        NODE_IMAGE: node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+        RUNTIME_IMAGE: alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+        GOPROXY: https://goproxy.cn,direct
+    image: "${E2M_UI17_CORE_IMAGE:?set E2M_UI17_CORE_IMAGE to this disposable project's unique image tag}"
+    depends_on:
+      core-postgres:
+        condition: service_healthy
+    environment:
+      E2M_CORE_ADDR: ":8080"
+      E2M_CORE_STORE: "postgres"
+      E2M_CORE_DATABASE_URL: "postgres://e2m_ui17:e2m_ui17@core-postgres:5432/e2m_ui17?sslmode=disable"
+      E2M_CORE_PUBLIC_URL: "http://127.0.0.1:${E2M_UI17_CORE_PORT:-28080}"
+      E2M_ADMIN_EMAIL: "admin@ui17.local"
+      E2M_ADMIN_PASSWORD: "ui17-admin-password"
+      E2M_CORE_VAULT: "file"
+      E2M_VAULT_KEY: "9f536b083d352628878520049aec1d22f46f4fa18f4d49c0f1c7f4384f9e756c" # gitleaks:allow -- disposable fixture
+      E2M_VAULT_PATH: "/data/vault.enc"
+      E2M_UPSTREAM_INTELLIGENCE_CURSOR_ACTIVE_KID: "ui17-disposable"
+      E2M_UPSTREAM_INTELLIGENCE_CURSOR_KEYS: "ui17-disposable=ec8d5bc250568822b474758b2579629973083d69a93e3d594c103444a95fd67f" # gitleaks:allow -- disposable fixture
+      E2M_UPSTREAM_RECOMMENDATIONS: "true"
+      E2M_UPSTREAM_OPTIMIZATION_AUTO_APPLY: "true"
+      E2M_RECOMMENDATION_ROLLOUT_OBSERVATION: "${E2M_UI17_ROLLOUT_OBSERVATION:-5m}"
+      E2M_RECOMMENDATION_ROLLOUT_WORKER_INTERVAL: "${E2M_UI17_ROLLOUT_WORKER_INTERVAL:-1s}"
+      E2M_RECOMMENDATION_ROLLOUT_WORKER_LEASE: "2m"
+      # The acceptance runner keeps the automatic Runner outside all four
+      # manual observation windows, then force-recreates only disposable Core
+      # at a fast cadence after regression evidence is durable.
+      E2M_RECOMMENDATION_ROLLOUT_RUNNER_INTERVAL: "${E2M_UI17_ROLLOUT_RUNNER_INTERVAL:-1m}"
+      # A non-trivial cadence leaves enough time to run recommendation,
+      # shadow, dry-run and Start against one freshly aggregated fact version.
+      E2M_HEALTH_METRICS_INTERVAL: "${E2M_UI17_HEALTH_METRICS_INTERVAL:-10s}"
+      E2M_AUTOSWITCH: "false"
+      E2M_ONBOARDING: "false"
+    ports:
+      - "127.0.0.1:${E2M_UI17_CORE_PORT:-28080}:8080"
+    volumes:
+      - core-vault-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  connector-newapi:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-agent/Dockerfile
+      args:
+        GO_IMAGE: golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648
+        RUNTIME_IMAGE: alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+        GOPROXY: https://goproxy.cn,direct
+    image: "${E2M_UI17_CONNECTOR_IMAGE:?set E2M_UI17_CONNECTOR_IMAGE to this disposable project's unique image tag}"
+    restart: unless-stopped
+    depends_on:
+      e2m-core:
+        condition: service_healthy
+      newapi:
+        condition: service_healthy
+    environment:
+      E2M_CORE_URL: "http://e2m-core:8080"
+      E2M_CONNECTOR_ID: "${E2M_UI17_CONNECTOR_ID:?bootstrap Core first, then set E2M_UI17_CONNECTOR_ID}"
+      E2M_INSTANCE_ID: "${E2M_UI17_INSTANCE_ID:?bootstrap Core first, then set E2M_UI17_INSTANCE_ID}"
+      E2M_CONNECTOR_ENABLED: "true"
+      E2M_CONNECTOR_ENROLL_TOKEN_FILE: "/run/secrets/e2m_connector_enrollment"
+      E2M_CONNECTOR_TOKEN_FILE: "/var/lib/e2m-agent/connector.token"
+      E2M_CONNECTOR_IDENTITY_FILE: "/var/lib/e2m-agent/connector-identity.json"
+      E2M_GATEWAY_KIND: "newapi"
+      E2M_LOCAL_UI_ADDR: "0.0.0.0:18081"
+      E2M_LOCAL_UI_ALLOW_PRIVATE_PEERS: "true"
+    ports:
+      - "127.0.0.1:${E2M_UI17_CONNECTOR_PORT:-28082}:18081"
+    volumes:
+      - connector-data:/var/lib/e2m-agent
+    secrets:
+      - source: connector-enrollment
+        target: e2m_connector_enrollment
+
+volumes:
+  core-postgres-data:
+  core-vault-data:
+  newapi-postgres-data:
+  newapi-data:
+  newapi-logs:
+  connector-data:
+
+secrets:
+  connector-enrollment:
+    file: "${E2M_UI17_RUNTIME_DIR:?set E2M_UI17_RUNTIME_DIR to a dedicated disposable directory}/connector/enrollment.token"

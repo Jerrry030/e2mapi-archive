@@ -1,0 +1,333 @@
+rule_files:
+  - upstream-intelligence-alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: E2MUpstreamIntelligenceMetricsMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: E2M upstream intelligence metrics are unavailable
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#metrics-missing
+      - eval_time: 5m
+        alertname: E2MUpstreamComparableCoverageLow
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: E2MUpstreamGlobalIngestFailure
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: E2MUpstreamIntelligenceOutboxStuck
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: E2MUpstreamFalseRemovalInvariantViolation
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: E2MUpstreamCredentialLeakDetected
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: E2MUpstreamCrossOwnerRejectionAnomaly
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_cost_job_oldest_age_seconds
+        values: 100 901 901 901 901 901 901 901 901 901 901 901
+      - series: e2m_connector_task_oldest_age_seconds
+        values: 0 0 0 0 0 0 0 0 0 0 0 0
+      - series: e2m_upstream_stale_evidence
+        values: 0 0 0 0 0 0 0 0 0 0 0 0
+      - series: e2m_upstream_sources{state="active"}
+        values: 2 2 2 2 2 2 2 2 2 2 2 2
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: E2MUpstreamCostAttributionJobStuck
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Oldest upstream cost-attribution job exceeds 15 minutes
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#cost-attribution-backlog
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_sources{state="active"}
+        values: 2 2 2 2 2
+      - series: e2m_recommendation_rollback_failures
+        values: 0 1 1 1 1
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: E2MRecommendationRollbackFailure
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A recommendation rollback has failed verification
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#rollback-failure
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_sources{state="active"}
+        values: 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+      - series: e2m_upstream_fresh_comparable_coverage_ratio
+        values: 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5 0.5
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: E2MUpstreamComparableCoverageLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Fresh comparable upstream price coverage is below 90 percent
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#low-comparable-coverage
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_sources{state="active"}
+        values: 2 2 2 2 2 2
+      - series: e2m_upstream_sources{state="failed"}
+        values: 2 2 2 2 2 2
+      - series: e2m_upstream_collection_last_success_age_seconds
+        values: 901 961 1021 1081 1141 1201
+      - series: e2m_upstream_collection_sources_without_success
+        values: 0 0 0 0 0 0
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: E2MUpstreamGlobalIngestFailure
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: All active upstream intelligence sources are failing collection
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#global-ingest-failure
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_sources{state="active"}
+        values: 2 2 2 2 2 2
+      - series: e2m_upstream_sources{state="failed"}
+        values: 2 2 2 2 2 2
+      - series: e2m_upstream_collection_sources_without_success
+        values: 2 2 2 2 2 2
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: E2MUpstreamGlobalIngestFailure
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: All active upstream intelligence sources are failing collection
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#global-ingest-failure
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_sources{state="active"}
+        values: 2 2 2 2 2 2
+      - series: e2m_upstream_sources{state="failed"}
+        values: 1 1 1 1 1 1
+      - series: e2m_upstream_collection_last_success_age_seconds
+        values: 5000 5060 5120 5180 5240 5300
+      - series: e2m_upstream_collection_sources_without_success
+        values: 0 0 0 0 0 0
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: E2MUpstreamGlobalIngestFailure
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_sources{state="active"}
+        values: 2 2 2 2 2 2
+      - series: e2m_upstream_sources{state="failed"}
+        values: 2 2 2 2 2 2
+      - series: e2m_upstream_collection_sources_without_success
+        values: 1 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: E2MUpstreamGlobalIngestFailure
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_intelligence_outbox_depth{job="e2m-agent",instance="connector-a"}
+        values: 3 3 3 3 3 3 3 3 3 3 3
+      - series: e2m_upstream_intelligence_outbox_oldest_age_seconds{job="e2m-agent",instance="connector-a"}
+        values: 301 361 421 481 541 601 661 721 781 841 901
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: E2MUpstreamIntelligenceOutboxStuck
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: e2m-agent
+              instance: connector-a
+            exp_annotations:
+              summary: A Connector intelligence outbox has remained backlogged
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#intelligence-outbox-backlog
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_intelligence_outbox_depth{job="e2m-agent",instance="connector-empty"}
+        values: 0 0 0 0 0 0 0 0 0 0 0
+      - series: e2m_upstream_intelligence_outbox_oldest_age_seconds{job="e2m-agent",instance="connector-empty"}
+        values: 0 0 0 0 0 0 0 0 0 0 0
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: E2MUpstreamIntelligenceOutboxStuck
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_intelligence_outbox_oldest_age_seconds{job="e2m-agent",instance="connector-unknown-depth"}
+        values: 301 361 421 481 541 601 661 721 781 841 901
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: E2MUpstreamIntelligenceOutboxStuck
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_false_removal_invariant_violations_total
+        values: 0 0 1 1 1 1
+      - series: e2m_upstream_security_events_total{kind="credential_leak_detected"}
+        values: 0 0 0 1 1 1
+      - series: e2m_upstream_security_events_total{kind="cross_owner_rejected"}
+        values: 0 2 4 6 6 6
+      - series: e2m_upstream_security_events_total{kind="not_allowlisted"}
+        values: 0 100 200 300 400 500
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: E2MUpstreamFalseRemovalInvariantViolation
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: An upstream false-removal safety invariant was violated
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#false-removal-invariant
+      - eval_time: 3m
+        alertname: E2MUpstreamCredentialLeakDetected
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              kind: credential_leak_detected
+            exp_annotations:
+              summary: Connector-sensitive data reached a prohibited Core boundary
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#credential-leak-detected
+      - eval_time: 3m
+        alertname: E2MUpstreamCrossOwnerRejectionAnomaly
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              kind: cross_owner_rejected
+            exp_annotations:
+              summary: Cross-owner upstream requests exceeded the rejection threshold
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#cross-owner-rejection-anomaly
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_security_events_total{kind="cross_owner_rejected"}
+        values: 0 1 2 3 4 5
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: E2MUpstreamCrossOwnerRejectionAnomaly
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_false_removal_invariant_violations_total{instance="core-a"}
+        values: 7 7 7 7 7 7
+      - series: e2m_upstream_security_events_total{kind="credential_leak_detected",instance="core-a"}
+        values: 3 3 3 3 3 3
+      - series: e2m_upstream_security_events_total{kind="cross_owner_rejected",instance="core-a"}
+        values: 30 30 30 30 30 30
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: E2MUpstreamFalseRemovalInvariantViolation
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: E2MUpstreamCredentialLeakDetected
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: E2MUpstreamCrossOwnerRejectionAnomaly
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_security_events_total{kind="cross_owner_rejected",instance="core-a"}
+        values: 0 1 1 2 2 3
+      - series: e2m_upstream_security_events_total{kind="cross_owner_rejected",instance="core-b"}
+        values: 0 1 1 2 2 3
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: E2MUpstreamCrossOwnerRejectionAnomaly
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_sources{state="active"}
+        values: 2 2 2 2 2 2 2 2 2 2 2 2
+      - series: e2m_connector_task_oldest_age_seconds
+        values: 901 901 901 901 901 901 901 901 901 901 901 901
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: E2MConnectorTaskBacklogStuck
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Oldest actionable Connector task exceeds 15 minutes
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#connector-task-backlog
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_sources{state="active"}
+        values: 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2
+      - series: e2m_upstream_stale_evidence
+        values: 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: E2MUpstreamEvidenceStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Current upstream evidence has exceeded its freshness window
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#stale-evidence
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_sources{state="active"}
+        values: 2 2 2 2 2 2 2 2 2 2 2 2
+      - series: e2m_recommendation_rollouts{status="blocked"}
+        values: 1 1 1 1 1 1 1 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: E2MRecommendationRolloutBlocked
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              status: blocked
+            exp_annotations:
+              summary: One or more recommendation rollouts are blocked
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#blocked-rollout
+
+  - interval: 1m
+    input_series:
+      - series: e2m_upstream_sources{state="active"}
+        values: 2 2 2 2 2 2 2 2 2 2 2 2
+      - series: e2m_recommendation_rollout_oldest_action_age_seconds
+        values: 601 601 601 601 601 601 601 601 601 601 601 601
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: E2MRecommendationRolloutActionStuck
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A staged rollout or rollback has remained actionable too long
+              runbook: docs/development/upstream-intelligence-operations-runbook.md#stuck-rollout-action

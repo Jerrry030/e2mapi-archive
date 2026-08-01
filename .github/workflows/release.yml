@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: build release artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            app/e2m-core/go.sum
+            app/e2m-agent/go.mod
+            packages/e2m-contracts/go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/console/package-lock.json
+
+      - name: build web console
+        working-directory: web/console
+        run: npm ci && npm run build
+
+      - name: prepare embedded web assets
+        run: |
+          rm -rf app/e2m-core/internal/webui/dist
+          mkdir -p app/e2m-core/internal/webui/dist
+          cp -R web/console/dist/. app/e2m-core/internal/webui/dist/
+
+      - name: build binaries
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/e2m-core-linux-amd64 ./app/e2m-core/cmd/e2m-core
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/e2m-agent-linux-amd64 ./app/e2m-agent/cmd/e2m-agent
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/e2m-core-windows-amd64.exe ./app/e2m-core/cmd/e2m-core
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/e2m-agent-windows-amd64.exe ./app/e2m-agent/cmd/e2m-agent
+
+      - name: log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: extract e2m-agent image metadata
+        id: agent-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/e2m-agent
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: publish e2m-agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: app/e2m-agent/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.agent-meta.outputs.tags }}
+          labels: ${{ steps.agent-meta.outputs.labels }}
+          cache-from: type=gha,scope=e2m-agent
+          cache-to: type=gha,mode=max,scope=e2m-agent
+
+      - name: publish github release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*

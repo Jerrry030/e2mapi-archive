@@ -1,0 +1,261 @@
+# Disposable UI-17 acceptance fixture: one owned and two external real
+# Sub2API intelligence sources across 14 services. The caller MUST supply a unique Compose project
+# (`docker compose -p ...`). This file deliberately has no top-level `name`, no
+# fixed container names, and no fixed volume names.
+#
+# Sub2API v0.1.164 is pinned to its immutable upstream GHCR manifest list
+# (tag commit cd8bb98c44303b2c8f04c0da340447c992f0cb7d). Never replace it with
+# `latest`, a locally patched image, a mock, or a directory mounted over /app.
+
+x-sub2api-environment: &sub2api-environment
+  AUTO_SETUP: "true"
+  SERVER_HOST: "0.0.0.0"
+  SERVER_PORT: "8080"
+  SERVER_MODE: "release"
+  RUN_MODE: "standard"
+  DATABASE_PORT: "5432"
+  DATABASE_USER: "sub2api"
+  DATABASE_PASSWORD: "ui17-sub2api-only"
+  DATABASE_DBNAME: "sub2api"
+  DATABASE_SSLMODE: "disable"
+  REDIS_PORT: "6379"
+  REDIS_PASSWORD: ""
+  REDIS_DB: "0"
+  ADMIN_EMAIL: "admin@ui17.invalid"
+  ADMIN_PASSWORD: "ui17-admin-password"
+  JWT_EXPIRE_HOUR: "24"
+  TZ: "UTC"
+
+x-postgres-healthcheck: &postgres-healthcheck
+  test: ["CMD-SHELL", "pg_isready -U sub2api -d sub2api"]
+  interval: 2s
+  timeout: 3s
+  retries: 60
+
+x-redis-healthcheck: &redis-healthcheck
+  test: ["CMD", "redis-cli", "ping"]
+  interval: 2s
+  timeout: 3s
+  retries: 60
+
+x-sub2api-healthcheck: &sub2api-healthcheck
+  test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+  interval: 3s
+  timeout: 5s
+  retries: 60
+  start_period: 20s
+
+x-connector-environment: &connector-environment
+  E2M_CORE_URL: "http://e2m-core:8080"
+  E2M_CONNECTOR_ENABLED: "true"
+  E2M_CONNECTOR_ENROLL_TOKEN_FILE: "/run/secrets/e2m_connector_enrollment"
+  E2M_CONNECTOR_TOKEN_FILE: "/var/lib/e2m-agent/connector.token"
+  E2M_CONNECTOR_IDENTITY_FILE: "/var/lib/e2m-agent/connector-identity.json"
+  E2M_LOCAL_UI_ADDR: "0.0.0.0:18081"
+  E2M_LOCAL_UI_ALLOW_PRIVATE_PEERS: "true"
+
+services:
+  core-postgres:
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    environment:
+      POSTGRES_USER: e2m
+      POSTGRES_PASSWORD: ui17-core-only
+      POSTGRES_DB: e2m
+    volumes:
+      - core-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U e2m -d e2m"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  e2m-core:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-core/Dockerfile
+      args:
+        GO_IMAGE: golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648
+        NODE_IMAGE: node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+        RUNTIME_IMAGE: alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+        GOPROXY: https://proxy.golang.org,direct
+    depends_on:
+      core-postgres:
+        condition: service_healthy
+    environment:
+      E2M_CORE_ADDR: ":8080"
+      E2M_CORE_STORE: "postgres"
+      E2M_CORE_DATABASE_URL: "postgres://e2m:ui17-core-only@core-postgres:5432/e2m?sslmode=disable"
+      E2M_UPSTREAM_INTELLIGENCE_CURSOR_ACTIVE_KID: "ui17-only"
+      E2M_UPSTREAM_INTELLIGENCE_CURSOR_KEYS: "ui17-only=65326d2d756931372d646973706f7361626c652d637572736f722d6b65792d31"
+      E2M_UPSTREAM_RECOMMENDATIONS: "false"
+      E2M_UPSTREAM_OPTIMIZATION_AUTO_APPLY: "false"
+      E2M_ADMIN_EMAIL: "admin@ui17.invalid"
+      E2M_ADMIN_PASSWORD: "ui17-core-admin-password"
+      E2M_AUTH_REGISTRATION_ENABLED: "false"
+      E2M_ENABLE_BILLING: "false"
+      E2M_ENABLE_PAYMENTS: "false"
+      E2M_ENABLE_SUPPLY: "false"
+      E2M_OWNER_KEY_REVEAL: "false"
+      E2M_CORE_PUBLIC_URL: "http://127.0.0.1:${UI17_CORE_PORT:?set UI17_CORE_PORT}"
+    ports:
+      - "127.0.0.1:${UI17_CORE_PORT:?set UI17_CORE_PORT}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+
+  owned-postgres:
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    environment: {POSTGRES_USER: sub2api, POSTGRES_PASSWORD: ui17-sub2api-only, POSTGRES_DB: sub2api}
+    volumes: [owned-postgres-data:/var/lib/postgresql/data]
+    healthcheck: *postgres-healthcheck
+  owned-redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    volumes: [owned-redis-data:/data]
+    healthcheck: *redis-healthcheck
+  owned-sub2api:
+    image: ghcr.io/wei-shaw/sub2api:0.1.164@sha256:a94c25fb4c50c3bf21155142d745ff11a8d9199e4cf72d9a2424d75ccbfc1659
+    pull_policy: always
+    depends_on:
+      owned-postgres: {condition: service_healthy}
+      owned-redis: {condition: service_healthy}
+    environment:
+      <<: *sub2api-environment
+      DATABASE_HOST: owned-postgres
+      REDIS_HOST: owned-redis
+      JWT_SECRET: "ui17-owned-jwt-secret-not-production"
+    ports: ["127.0.0.1:${UI17_OWNED_SUB2API_PORT:?set UI17_OWNED_SUB2API_PORT}:8080"]
+    volumes: [owned-sub2api-data:/app/data]
+    healthcheck: *sub2api-healthcheck
+
+  external-a-postgres:
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    environment: {POSTGRES_USER: sub2api, POSTGRES_PASSWORD: ui17-sub2api-only, POSTGRES_DB: sub2api}
+    volumes: [external-a-postgres-data:/var/lib/postgresql/data]
+    healthcheck: *postgres-healthcheck
+  external-a-redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    volumes: [external-a-redis-data:/data]
+    healthcheck: *redis-healthcheck
+  external-a-sub2api:
+    image: ghcr.io/wei-shaw/sub2api:0.1.164@sha256:a94c25fb4c50c3bf21155142d745ff11a8d9199e4cf72d9a2424d75ccbfc1659
+    pull_policy: always
+    depends_on:
+      external-a-postgres: {condition: service_healthy}
+      external-a-redis: {condition: service_healthy}
+    environment:
+      <<: *sub2api-environment
+      DATABASE_HOST: external-a-postgres
+      REDIS_HOST: external-a-redis
+      JWT_SECRET: "ui17-external-a-jwt-secret-not-production"
+    ports: ["127.0.0.1:${UI17_EXTERNAL_A_SUB2API_PORT:?set UI17_EXTERNAL_A_SUB2API_PORT}:8080"]
+    volumes: [external-a-sub2api-data:/app/data]
+    healthcheck: *sub2api-healthcheck
+
+  external-b-postgres:
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    environment: {POSTGRES_USER: sub2api, POSTGRES_PASSWORD: ui17-sub2api-only, POSTGRES_DB: sub2api}
+    volumes: [external-b-postgres-data:/var/lib/postgresql/data]
+    healthcheck: *postgres-healthcheck
+  external-b-redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    volumes: [external-b-redis-data:/data]
+    healthcheck: *redis-healthcheck
+  external-b-sub2api:
+    image: ghcr.io/wei-shaw/sub2api:0.1.164@sha256:a94c25fb4c50c3bf21155142d745ff11a8d9199e4cf72d9a2424d75ccbfc1659
+    pull_policy: always
+    depends_on:
+      external-b-postgres: {condition: service_healthy}
+      external-b-redis: {condition: service_healthy}
+    environment:
+      <<: *sub2api-environment
+      DATABASE_HOST: external-b-postgres
+      REDIS_HOST: external-b-redis
+      JWT_SECRET: "ui17-external-b-jwt-secret-not-production"
+    ports: ["127.0.0.1:${UI17_EXTERNAL_B_SUB2API_PORT:?set UI17_EXTERNAL_B_SUB2API_PORT}:8080"]
+    volumes: [external-b-sub2api-data:/app/data]
+    healthcheck: *sub2api-healthcheck
+
+  connector-owned:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-agent/Dockerfile
+      args:
+        GO_IMAGE: golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648
+        RUNTIME_IMAGE: alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+        GOPROXY: https://proxy.golang.org,direct
+    depends_on:
+      e2m-core: {condition: service_healthy}
+      owned-sub2api: {condition: service_healthy}
+    environment:
+      <<: *connector-environment
+      E2M_CONNECTOR_ID: ${UI17_OWNED_CONNECTOR_ID:?set UI17_OWNED_CONNECTOR_ID}
+      E2M_INSTANCE_ID: ${UI17_OWNED_INSTANCE_ID:?set UI17_OWNED_INSTANCE_ID}
+    ports: ["127.0.0.1:${UI17_OWNED_CONNECTOR_PORT:?set UI17_OWNED_CONNECTOR_PORT}:18081"]
+    volumes: [connector-owned-data:/var/lib/e2m-agent]
+    secrets:
+      - {source: owned-enrollment, target: e2m_connector_enrollment}
+
+  connector-external-a:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-agent/Dockerfile
+      args:
+        GO_IMAGE: golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648
+        RUNTIME_IMAGE: alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+        GOPROXY: https://proxy.golang.org,direct
+    depends_on:
+      e2m-core: {condition: service_healthy}
+      external-a-sub2api: {condition: service_healthy}
+    environment:
+      <<: *connector-environment
+      E2M_CONNECTOR_ID: ${UI17_EXTERNAL_A_CONNECTOR_ID:?set UI17_EXTERNAL_A_CONNECTOR_ID}
+      E2M_INSTANCE_ID: ${UI17_EXTERNAL_A_INSTANCE_ID:?set UI17_EXTERNAL_A_INSTANCE_ID}
+    ports: ["127.0.0.1:${UI17_EXTERNAL_A_CONNECTOR_PORT:?set UI17_EXTERNAL_A_CONNECTOR_PORT}:18081"]
+    volumes: [connector-external-a-data:/var/lib/e2m-agent]
+    secrets:
+      - {source: external-a-enrollment, target: e2m_connector_enrollment}
+
+  connector-external-b:
+    build:
+      context: ../../..
+      dockerfile: app/e2m-agent/Dockerfile
+      args:
+        GO_IMAGE: golang:1.26.4-alpine@sha256:3ad57304ad93bbec8548a0437ad9e06a455660655d9af011d58b993f6f615648
+        RUNTIME_IMAGE: alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+        GOPROXY: https://proxy.golang.org,direct
+    depends_on:
+      e2m-core: {condition: service_healthy}
+      external-b-sub2api: {condition: service_healthy}
+    environment:
+      <<: *connector-environment
+      E2M_CONNECTOR_ID: ${UI17_EXTERNAL_B_CONNECTOR_ID:?set UI17_EXTERNAL_B_CONNECTOR_ID}
+      E2M_INSTANCE_ID: ${UI17_EXTERNAL_B_INSTANCE_ID:?set UI17_EXTERNAL_B_INSTANCE_ID}
+    ports: ["127.0.0.1:${UI17_EXTERNAL_B_CONNECTOR_PORT:?set UI17_EXTERNAL_B_CONNECTOR_PORT}:18081"]
+    volumes: [connector-external-b-data:/var/lib/e2m-agent]
+    secrets:
+      - {source: external-b-enrollment, target: e2m_connector_enrollment}
+
+volumes:
+  core-postgres-data:
+  owned-postgres-data:
+  owned-redis-data:
+  owned-sub2api-data:
+  external-a-postgres-data:
+  external-a-redis-data:
+  external-a-sub2api-data:
+  external-b-postgres-data:
+  external-b-redis-data:
+  external-b-sub2api-data:
+  connector-owned-data:
+  connector-external-a-data:
+  connector-external-b-data:
+
+secrets:
+  owned-enrollment:
+    file: ${UI17_OWNED_ENROLLMENT_FILE:?set UI17_OWNED_ENROLLMENT_FILE}
+  external-a-enrollment:
+    file: ${UI17_EXTERNAL_A_ENROLLMENT_FILE:?set UI17_EXTERNAL_A_ENROLLMENT_FILE}
+  external-b-enrollment:
+    file: ${UI17_EXTERNAL_B_ENROLLMENT_FILE:?set UI17_EXTERNAL_B_ENROLLMENT_FILE}

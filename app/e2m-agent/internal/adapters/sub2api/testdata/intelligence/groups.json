@@ -1,0 +1,1 @@
+{"code":0,"message":"success","data":[{"id":3,"name":"Claude","platform":"anthropic","rate_multiplier":0.8,"ignored":"safe"},{"id":4,"name":"OpenAI","platform":"openai","rate_multiplier":1}]}

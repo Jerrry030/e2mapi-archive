@@ -1,0 +1,8 @@
+DROP INDEX IF EXISTS idx_upstream_change_events_after_observation;
+DROP INDEX IF EXISTS idx_upstream_change_events_before_observation;
+DROP INDEX IF EXISTS idx_upstream_snapshot_absences_last_present_run;
+DROP INDEX IF EXISTS idx_upstream_offer_observations_current_frontier;
+DROP INDEX IF EXISTS idx_upstream_wallet_observations_current_frontier;
+DROP INDEX IF EXISTS idx_upstream_collection_runs_complete_frontier;
+DROP INDEX IF EXISTS idx_upstream_collection_runs_current_frontier;
+DROP INDEX IF EXISTS idx_upstream_collection_runs_owner_retention;
