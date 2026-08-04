@@ -535,9 +535,20 @@ func (s *Server) handleUpdatePlatformUpstream(w http.ResponseWriter, r *http.Req
 		writePlatformDecodeError(w, err)
 		return
 	}
-	if strings.TrimSpace(input.GroupID) != "" && strings.TrimSpace(input.GroupID) != current.PoolID {
-		writeError(w, http.StatusConflict, "immutable_field", "group_id is immutable")
-		return
+	// An upstream may be moved between platform groups. Historical accounting
+	// is unaffected: usage records snapshot the group at reservation time, and
+	// settlement resolves by reservation, not by current membership.
+	if target := strings.TrimSpace(input.GroupID); target != "" && target != current.PoolID {
+		moved, groupErr := s.platformGroup(r, target)
+		if groupErr != nil {
+			writePlatformStoreError(w, groupErr)
+			return
+		}
+		if moved.Status == contracts.UpstreamPoolRetired {
+			writeError(w, http.StatusConflict, "group_retired", "a retired group cannot receive upstreams")
+			return
+		}
+		group = moved
 	}
 	channel, endpoint, msg := s.platformUpstreamRecords(input, group, &current, &currentEndpoint)
 	if msg != "" {
@@ -735,6 +746,8 @@ func (s *Server) platformUpstreamRecords(input platformUpstreamRequest, group co
 	endpoint := contracts.SupplyChannelEndpoint{ChannelID: "pending", Currency: "CNY", CapacityPercent: 100, MaxRequestMicros: defaultPlatformMaxRequestMicros, Enabled: true}
 	if current != nil {
 		channel = *current
+		// The caller resolves the target group, so this also applies a move.
+		channel.PoolID = group.ID
 	}
 	if currentEndpoint != nil {
 		endpoint = *currentEndpoint
