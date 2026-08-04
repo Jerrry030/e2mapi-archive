@@ -102,11 +102,18 @@ func (v *FileVault) Resolve(ctx context.Context, ref string) (Secret, error) {
 		return Secret{}, err
 	}
 	// Reload under the write lock so credentials persisted by another E2M Core
-	// process become visible without a restart.
+	// process become visible without a restart. The reload is best-effort: this
+	// process's in-memory map always reflects the last durable state it saw
+	// (failed Store/Delete calls roll back), so a read error must not take
+	// already-held credentials out of service. Error mapping also differs by
+	// platform (Linux ENOTDIR vs Windows path-not-found), and only the fallback
+	// keeps behavior consistent across both.
 	v.mu.Lock()
 	if err := v.loadLocked(); err != nil {
-		v.mu.Unlock()
-		return Secret{}, err
+		if _, held := v.refs[ref]; !held {
+			v.mu.Unlock()
+			return Secret{}, err
+		}
 	}
 	encoded, ok := v.refs[ref]
 	v.mu.Unlock()

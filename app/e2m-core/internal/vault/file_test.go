@@ -145,6 +145,29 @@ func TestFileVaultStoreFailureRestoresExistingInMemoryValue(t *testing.T) {
 	}
 }
 
+func TestFileVaultResolveReloadFailureKeepsHeldSecretsOnly(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "vault.enc")
+	v, err := NewFileVault(path, "0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Store(ctx, "ref:held", "held-value"); err != nil {
+		t.Fatal(err)
+	}
+	v.path = filepath.Join(path, "child")
+
+	// A held credential keeps resolving from the consistent in-memory snapshot.
+	secret, err := v.Resolve(ctx, "ref:held")
+	if err != nil || secret.Value != "held-value" {
+		t.Fatalf("held secret must survive a reload failure: %+v err=%v", secret, err)
+	}
+	// An unknown ref must surface the reload error, not a misleading ErrNotFound.
+	if _, err := v.Resolve(ctx, "ref:unknown"); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown ref during reload failure must return the read error, got %v", err)
+	}
+}
+
 func TestFileVaultDeleteFailureRestoresInMemoryValue(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "vault.enc")
