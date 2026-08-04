@@ -29,6 +29,20 @@ export interface MenuNode {
 
 const adminSectionMenu: MenuNode[] = [
   {
+    path: '/platform-groups',
+    name: '分组管理',
+    i18nKey: 'consoleMenu.platformGroups',
+    icon: 'platform',
+    roles: ['admin'],
+  },
+  {
+    path: '/platform-upstreams',
+    name: '上游账号',
+    i18nKey: 'consoleMenu.platformUpstreams',
+    icon: 'connector',
+    roles: ['admin'],
+  },
+  {
     path: '/instances',
     name: '客户实例',
     i18nKey: 'consoleMenu.customerInstances',

@@ -8,6 +8,8 @@ describe('console menu', () => {
     const sections = menuForRole('admin')
     expect(sections.map((node) => node.section)).toEqual(['admin', 'common'])
     expect(sections[0].routes?.map((node) => node.path)).toEqual([
+      '/platform-groups',
+      '/platform-upstreams',
       '/instances',
       '/users',
       '/system-settings',

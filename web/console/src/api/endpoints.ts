@@ -186,7 +186,11 @@ export interface PlatformGroupInput {
   region?: string
   labels?: Record<string, string>
   status?: UpstreamPoolStatus
-  resource_class: 'economy' | 'stable'
+  /**
+   * Optional internal resource class. Groups are just named pools; the server
+   * assigns a default class when this is omitted, so operators never pick one.
+   */
+  resource_class?: 'economy' | 'stable'
   /** Sell-price multiplier over base-table prices, decimal string like "1.25". */
   rate_multiplier?: string
 }
