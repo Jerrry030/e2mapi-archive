@@ -56,6 +56,7 @@ func (s *Server) registerPlatformDistributionRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/v1/platform/wallet/journals", s.handleListPlatformWalletJournals)
 	api.HandleFunc("POST /api/v1/platform/wallet-adjustments", s.handleAdjustPlatformWallet)
 	api.HandleFunc("GET /api/v1/platform/usage", s.handleListPlatformUsage)
+	api.HandleFunc("GET /api/v1/platform/pricing/preview", s.handleGetPlatformPricingPreview)
 }
 
 type platformGroupRequest struct {
@@ -67,6 +68,9 @@ type platformGroupRequest struct {
 	Status        contracts.UpstreamPoolStatus `json:"status,omitempty"`
 	ResourceClass contracts.ResourceClass      `json:"resource_class,omitempty"`
 	Labels        *map[string]string           `json:"labels,omitempty"`
+	// RateMultiplier scales base-table prices for every upstream in the group
+	// (decimal, e.g. "1.25"). Stored as basis points on the pool labels.
+	RateMultiplier *string `json:"rate_multiplier,omitempty"`
 }
 
 // platformGroupCatalogItem is the downstream-facing product catalog. Keep
@@ -148,7 +152,10 @@ func (s *Server) handleCreatePlatformGroup(w http.ResponseWriter, r *http.Reques
 		Name: strings.TrimSpace(input.Name), ResourceClass: contracts.NormalizePlatformResourceClass(input.ResourceClass),
 		DeliveryMode: contracts.UpstreamDeliverySupplyGateway, Status: input.Status,
 	}
-	applyPlatformGroupRequest(&group, input)
+	if msg := applyPlatformGroupRequest(&group, input); msg != "" {
+		writeError(w, http.StatusBadRequest, "validation_failed", msg)
+		return
+	}
 	if group.Status == "" {
 		group.Status = contracts.UpstreamPoolActive
 	}
@@ -202,7 +209,10 @@ func (s *Server) handleUpdatePlatformGroup(w http.ResponseWriter, r *http.Reques
 	if input.Status != "" {
 		group.Status = input.Status
 	}
-	applyPlatformGroupRequest(&group, input)
+	if msg := applyPlatformGroupRequest(&group, input); msg != "" {
+		writeError(w, http.StatusBadRequest, "validation_failed", msg)
+		return
+	}
 	group.DeliveryMode = contracts.UpstreamDeliverySupplyGateway
 	if msg := validatePlatformGroup(group, false); msg != "" {
 		writeError(w, http.StatusBadRequest, "validation_failed", msg)
@@ -255,7 +265,7 @@ func (s *Server) handleDeletePlatformGroup(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusAccepted, job)
 }
 
-func applyPlatformGroupRequest(group *contracts.UpstreamPool, input platformGroupRequest) {
+func applyPlatformGroupRequest(group *contracts.UpstreamPool, input platformGroupRequest) string {
 	if input.Description != nil {
 		group.Description = strings.TrimSpace(*input.Description)
 	}
@@ -271,6 +281,17 @@ func applyPlatformGroupRequest(group *contracts.UpstreamPool, input platformGrou
 	if input.Labels != nil {
 		group.Labels = *input.Labels
 	}
+	if input.RateMultiplier != nil {
+		bps, ok := parseRateMultiplier(*input.RateMultiplier)
+		if !ok {
+			return "rate_multiplier must be a decimal between 0.0001 and 100 with at most four decimal places"
+		}
+		if group.Labels == nil {
+			group.Labels = map[string]string{}
+		}
+		group.Labels[platformRateMultiplierLabel] = strconv.FormatInt(bps, 10)
+	}
+	return ""
 }
 
 func validatePlatformGroup(group contracts.UpstreamPool, creating bool) string {
@@ -785,6 +806,15 @@ func (s *Server) platformUpstreamRecords(input platformUpstreamRequest, group co
 		}
 		if price.OutputSupplierMicrosPerMillion != nil {
 			endpoint.OutputSupplierMicrosPerMillion = *price.OutputSupplierMicrosPerMillion
+		}
+	} else if currentEndpoint == nil && s.pricing.Enabled() {
+		// Explicit prices always win; on create without prices the sell price
+		// is materialized from the base table at the group's rate multiplier.
+		// V1 keeps one price per upstream, so every model must resolve to the
+		// same converted price — otherwise the operator has to price by hand
+		// (or split the upstream by model family).
+		if msg := fillPricesFromBaseTable(&endpoint, channel.Models, s.pricing, poolRateMultiplierBps(group)); msg != "" {
+			return channel, endpoint, msg
 		}
 	}
 	if input.Capacity.MaxConcurrency != nil {

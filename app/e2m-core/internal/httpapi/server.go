@@ -14,6 +14,7 @@ import (
 	"e2m.local/core/internal/keyproof"
 	"e2m.local/core/internal/notify"
 	"e2m.local/core/internal/orchestrator"
+	"e2m.local/core/internal/pricing"
 	"e2m.local/core/internal/recommendationrollout"
 	"e2m.local/core/internal/store"
 	"e2m.local/core/internal/vault"
@@ -54,6 +55,7 @@ type Server struct {
 	recommendationRollouts             RecommendationRolloutController
 	quality                            QualityObservationRecorder
 	costObservations                   store.UpstreamCostObservationStore
+	pricing                            *pricing.Service
 	secrets                            vault.Vault
 	notificationRouter                 *notify.Router
 	notificationTests                  notificationTestLimiter

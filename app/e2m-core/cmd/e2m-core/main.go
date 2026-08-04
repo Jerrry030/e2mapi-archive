@@ -28,6 +28,7 @@ import (
 	"e2m.local/core/internal/operationalmetrics"
 	"e2m.local/core/internal/orchestrator"
 	"e2m.local/core/internal/paymentexpiry"
+	"e2m.local/core/internal/pricing"
 	"e2m.local/core/internal/publish"
 	"e2m.local/core/internal/retirement"
 	"e2m.local/core/internal/store"
@@ -142,6 +143,19 @@ func run() error {
 	}
 	if getenv("E2M_SUPPLY_ALLOW_INSECURE_UPSTREAMS", "") == "true" || getenv("E2M_ALLOW_INSECURE_SUPPLY_UPSTREAMS", "") == "true" {
 		server.EnableInsecureSupplyUpstreams()
+	}
+	// Base-table pricing stays disabled without an explicit USD→CNY rate so a
+	// missing rate can never silently misprice settlement.
+	if rateRaw := strings.TrimSpace(os.Getenv("E2M_USD_TO_CNY_RATE")); rateRaw != "" {
+		usdToCny, rateErr := strconv.ParseFloat(rateRaw, 64)
+		if rateErr != nil || usdToCny <= 0 {
+			return fmt.Errorf("e2m-core: E2M_USD_TO_CNY_RATE must be a positive decimal, got %q", rateRaw)
+		}
+		priceTable, tableErr := pricing.Load(strings.TrimSpace(os.Getenv("E2M_PRICE_TABLE_PATH")))
+		if tableErr != nil {
+			return fmt.Errorf("e2m-core: load base price table failed: %w", tableErr)
+		}
+		server.SetPricing(pricing.NewService(priceTable, usdToCny))
 	}
 	server.SetBusinessFeatureFlags(httpapi.BusinessFeatureFlags{
 		Billing:                   getenv("E2M_ENABLE_BILLING", "") == "true",
