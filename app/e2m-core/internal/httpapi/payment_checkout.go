@@ -75,16 +75,28 @@ func (s *Server) handleCreateRechargeOrder(w http.ResponseWriter, r *http.Reques
 	if config.DailyLimit > 0 {
 		start := time.Now().UTC().Truncate(24 * time.Hour)
 		end := start.Add(24 * time.Hour)
-		today, listErr := s.store.ListPaymentOrders(r.Context(), contracts.PaymentOrderFilter{UserID: user.ID, Status: contracts.PaymentOrderCompleted, StartCreatedAt: &start, EndCreatedAt: &end, Page: 1, PageSize: 100})
-		if listErr != nil {
-			writeError(w, http.StatusInternalServerError, "store_error", listErr.Error())
-			return
-		}
 		spent := int64(0)
-		for _, order := range today.Items {
-			_, micros, valid := normalizeRechargeAmount(order.PayAmount)
-			if valid {
-				spent += micros
+		const dailyLimitPageSize = 100
+		// A spend ceiling must sum every completed order for the day, and it
+		// must fail closed if the count is too pathological to finish summing.
+		for pageNumber := 1; ; pageNumber++ {
+			if pageNumber > 200 {
+				writeError(w, http.StatusConflict, "daily_payment_limit", "daily payment limit exceeded")
+				return
+			}
+			today, listErr := s.store.ListPaymentOrders(r.Context(), contracts.PaymentOrderFilter{UserID: user.ID, Status: contracts.PaymentOrderCompleted, StartCreatedAt: &start, EndCreatedAt: &end, Page: pageNumber, PageSize: dailyLimitPageSize})
+			if listErr != nil {
+				writeError(w, http.StatusInternalServerError, "store_error", listErr.Error())
+				return
+			}
+			for _, order := range today.Items {
+				_, micros, valid := normalizeRechargeAmount(order.PayAmount)
+				if valid {
+					spent += micros
+				}
+			}
+			if len(today.Items) < dailyLimitPageSize {
+				break
 			}
 		}
 		if spent+amountMicros > int64(math.Round(config.DailyLimit*1_000_000)) {
@@ -97,8 +109,7 @@ func (s *Server) handleCreateRechargeOrder(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusServiceUnavailable, "payment_provider_unavailable", err.Error())
 		return
 	}
-	secretRef := provider.SecretRefs["secretKey"]
-	secret, err := s.secrets.Resolve(r.Context(), secretRef)
+	secret, err := s.secrets.Resolve(r.Context(), rechargeSecretRef(provider))
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "payment_provider_unavailable", "provider credential is unavailable")
 		return
@@ -122,6 +133,9 @@ func (s *Server) handleCreateRechargeOrder(w http.ResponseWriter, r *http.Reques
 	checkout, err := adapter.CreateCheckout(r.Context(), paymentruntime.CheckoutRequest{
 		Order: order, ReturnURL: returnURL, CancelURL: baseURL + "/payment/cancelled?order=" + url.QueryEscape(order.ID), SecretKey: secret.Value,
 		APIBaseURL: strings.TrimSpace(provider.Config["apiBase"]),
+		MerchantID: strings.TrimSpace(provider.Config["pid"]),
+		NotifyURL:  baseURL + "/api/v1/payment/webhooks/easypay/" + provider.ID,
+		ChannelID:  easyPayChannelID(provider, input.PaymentType),
 	})
 	if err != nil {
 		_, _ = s.store.CancelPendingPaymentOrder(r.Context(), order.ID, contracts.OperationAudit{ActorType: "system", ActorID: "payment-checkout", Action: "payment.checkout.create", RiskLevel: contracts.RiskLevelL2, Result: "failed", ErrorMessage: "provider_checkout_failed"})
@@ -156,15 +170,50 @@ func (s *Server) chooseRechargeProvider(r *http.Request, paymentType, currency s
 		return contracts.PaymentProvider{}, nil, err
 	}
 	for _, provider := range providers {
-		if !provider.Enabled || provider.ProviderKey != contracts.PaymentProviderStripe || strings.ToUpper(provider.Config["currency"]) != currency {
+		if !provider.Enabled {
 			continue
 		}
-		if paymentType != "stripe" && !containsPaymentString(provider.SupportedTypes, paymentType) {
-			continue
+		switch provider.ProviderKey {
+		case contracts.PaymentProviderStripe:
+			if strings.ToUpper(provider.Config["currency"]) != currency {
+				continue
+			}
+			if paymentType != "stripe" && !containsPaymentString(provider.SupportedTypes, paymentType) {
+				continue
+			}
+			return provider, paymentruntime.Stripe{}, nil
+		case contracts.PaymentProviderEasyPay:
+			// The aggregator protocol carries no currency; it settles CNY only.
+			if currency != "CNY" || paymentType != "alipay" && paymentType != "wxpay" {
+				continue
+			}
+			if len(provider.SupportedTypes) > 0 && !containsPaymentString(provider.SupportedTypes, paymentType) {
+				continue
+			}
+			return provider, paymentruntime.EasyPay{}, nil
 		}
-		return provider, paymentruntime.Stripe{}, nil
 	}
 	return contracts.PaymentProvider{}, nil, errors.New("no enabled provider supports this payment method and currency")
+}
+
+// rechargeSecretRef picks the vault reference that authenticates checkout and
+// order-query calls for the provider family.
+func rechargeSecretRef(provider contracts.PaymentProvider) string {
+	if provider.ProviderKey == contracts.PaymentProviderEasyPay {
+		return provider.SecretRefs["pkey"]
+	}
+	return provider.SecretRefs["secretKey"]
+}
+
+func easyPayChannelID(provider contracts.PaymentProvider, paymentType string) string {
+	switch paymentType {
+	case "alipay":
+		return strings.TrimSpace(provider.Config["cidAlipay"])
+	case "wxpay":
+		return strings.TrimSpace(provider.Config["cidWxpay"])
+	default:
+		return ""
+	}
 }
 
 func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
@@ -201,42 +250,98 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bodyHash := sha256.Sum256(body)
-	bodyHashHex := hex.EncodeToString(bodyHash[:])
-	_, _, _, err = s.store.ConfirmRechargePayment(r.Context(), contracts.PaymentNotification{
+	if !s.confirmVerifiedPayment(w, r, provider, verified, hex.EncodeToString(bodyHash[:])) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"received": true})
+}
+
+// handleEasyPayWebhook settles an aggregator notify. The gateway signs the
+// urlencoded parameters themselves (GET query or POST form body) with the
+// merchant key, and it keeps retrying until the response body is exactly
+// "success".
+func (s *Server) handleEasyPayWebhook(w http.ResponseWriter, r *http.Request) {
+	setNoStore(w)
+	if s.secrets == nil {
+		writeError(w, http.StatusServiceUnavailable, "vault_unavailable", "credential vault is not configured")
+		return
+	}
+	providerID := strings.TrimSpace(r.PathValue("providerId"))
+	provider, err := s.store.GetPaymentProvider(r.Context(), providerID)
+	if err != nil || provider.ProviderKey != contracts.PaymentProviderEasyPay || !provider.Enabled {
+		writeError(w, http.StatusNotFound, "not_found", "payment provider not found")
+		return
+	}
+	merchantKey, err := s.secrets.Resolve(r.Context(), provider.SecretRefs["pkey"])
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "payment_provider_unavailable", "webhook credential is unavailable")
+		return
+	}
+	payload := []byte(r.URL.RawQuery)
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(readErr, &tooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "payment webhook body exceeds 1 MiB")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "invalid_webhook", "payment webhook body could not be read")
+			return
+		}
+		payload = body
+	}
+	verified, err := (paymentruntime.EasyPay{}).VerifyNotification(payload, "", merchantKey.Value, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_signature", "payment webhook signature or payload is invalid")
+		return
+	}
+	bodyHash := sha256.Sum256(payload)
+	if !s.confirmVerifiedPayment(w, r, provider, verified, hex.EncodeToString(bodyHash[:])) {
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("success"))
+}
+
+// confirmVerifiedPayment settles a signature-verified notification and reports
+// whether the caller should acknowledge it. Authenticated orphans are durably
+// recorded before the acknowledgement so provider retries stop without turning
+// a missing local order into a silent accounting gap.
+func (s *Server) confirmVerifiedPayment(w http.ResponseWriter, r *http.Request, provider contracts.PaymentProvider, verified paymentruntime.VerifiedNotification, bodyHashHex string) bool {
+	_, _, _, err := s.store.ConfirmRechargePayment(r.Context(), contracts.PaymentNotification{
 		ProviderInstanceID: provider.ID, ProviderKey: provider.ProviderKey, EventID: verified.EventID,
 		ProviderOrderID: verified.ProviderOrderID, OutTradeNo: verified.OutTradeNo, PaymentTradeNo: verified.PaymentTradeNo,
 		PaidAmountMicros: verified.PaidAmountMicros, Currency: verified.Currency, PaidAt: verified.PaidAt,
 	}, bodyHashHex)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			// Persist the authenticated orphan before acknowledging it. This prevents
-			// endless provider retries without turning a missing local order into a
-			// silent accounting gap.
-			recordErr := s.store.RecordRejectedPaymentCallback(r.Context(), contracts.PaymentCallbackEvent{
-				ProviderInstanceID: provider.ID,
-				ProviderKey:        provider.ProviderKey,
-				EventID:            verified.EventID,
-				BodyHash:           bodyHashHex,
-				Accepted:           false,
-				ErrorCode:          "unknown_order",
-			})
-			if recordErr != nil {
-				writeHybridStoreError(w, recordErr)
-				return
-			}
-			_, _ = s.store.AppendAudit(r.Context(), contracts.OperationAudit{
-				ActorType: "provider", ActorID: provider.ID, Action: "payment.webhook.reject",
-				RiskLevel: contracts.RiskLevelL2, Result: "rejected", ErrorMessage: "unknown_order",
-				TargetType: "payment_callback", TargetID: verified.EventID, RequestHash: bodyHashHex,
-				Details: map[string]string{"provider_key": string(provider.ProviderKey), "out_trade_no": verified.OutTradeNo},
-			})
-			writeJSON(w, http.StatusOK, map[string]bool{"received": true})
-			return
-		}
-		writeHybridStoreError(w, err)
-		return
+	if err == nil {
+		return true
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"received": true})
+	if !errors.Is(err, store.ErrNotFound) {
+		writeHybridStoreError(w, err)
+		return false
+	}
+	recordErr := s.store.RecordRejectedPaymentCallback(r.Context(), contracts.PaymentCallbackEvent{
+		ProviderInstanceID: provider.ID,
+		ProviderKey:        provider.ProviderKey,
+		EventID:            verified.EventID,
+		BodyHash:           bodyHashHex,
+		Accepted:           false,
+		ErrorCode:          "unknown_order",
+	})
+	if recordErr != nil {
+		writeHybridStoreError(w, recordErr)
+		return false
+	}
+	_, _ = s.store.AppendAudit(r.Context(), contracts.OperationAudit{
+		ActorType: "provider", ActorID: provider.ID, Action: "payment.webhook.reject",
+		RiskLevel: contracts.RiskLevelL2, Result: "rejected", ErrorMessage: "unknown_order",
+		TargetType: "payment_callback", TargetID: verified.EventID, RequestHash: bodyHashHex,
+		Details: map[string]string{"provider_key": string(provider.ProviderKey), "out_trade_no": verified.OutTradeNo},
+	})
+	return true
 }
 
 func normalizeRechargeAmount(raw string) (string, int64, bool) {

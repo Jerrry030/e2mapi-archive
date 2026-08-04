@@ -42,6 +42,7 @@ const en = {
     financePreview: 'Finance preview',
     legacyCostEstimate: 'Cost estimate (legacy model)',
     experimentalPaymentOrders: 'Payment orders (experimental)',
+    recharge: 'Balance top-up',
     accessManagement: 'Access management',
     managedInstances: 'Managed instances',
     serviceQualityRouting: 'Service quality & routing',
@@ -588,6 +589,37 @@ const en = {
     offerRevokeConfirm: 'Revoke this supply offer?',
     offerRevokeDescription:
       'A revoked offer cannot be edited or allocated. Revoke every active allocation in the ledger first.',
+  },
+  recharge: {
+    title: 'Balance top-up',
+    invalidAmount: 'Enter a valid top-up amount',
+    createFailed: 'Could not create the top-up order',
+    intro: {
+      message: 'Top up your E2M platform wallet for usage-based billing on platform keys',
+      description:
+        'Payment happens on the provider-hosted page; the wallet is credited after the verified provider callback, usually within seconds.',
+    },
+    currentBalance: 'Current balance (CNY)',
+    amountTitle: 'Top-up amount',
+    customAmount: 'Custom amount',
+    methodStripe: 'Stripe',
+    methodAlipay: 'Alipay',
+    methodWxpay: 'WeChat Pay',
+    methodHint:
+      'Available methods depend on the configured payment channels; Alipay/WeChat go through the EasyPay aggregator.',
+    submit: 'Pay now',
+  },
+  paymentResult: {
+    successTitle: 'Checkout completed',
+    successSubtitle:
+      'Crediting follows the verified provider callback, usually within seconds; check the balance on the platform distribution page.',
+    cancelledTitle: 'Payment not completed',
+    cancelledSubtitle: 'You cancelled this payment.',
+    cancelledWithOrder: 'The order is kept; retry the payment or let it expire automatically.',
+    backToRecharge: 'Top up again',
+    backToPlatform: 'Back to platform distribution',
+    viewBalance: 'View balance',
+    rechargeAgain: 'Top up more',
   },
   payment: {
     intro: {

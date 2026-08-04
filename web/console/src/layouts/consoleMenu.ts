@@ -1,4 +1,5 @@
 import type { UserRole } from '../api/auth'
+import { consoleFeatureFlags } from '../config/featureFlags'
 
 export type MenuIcon =
   | 'audit'
@@ -97,6 +98,24 @@ export const consoleMenu: MenuNode[] = [
     icon: 'platform',
     roles: ['admin'],
   },
+  ...(consoleFeatureFlags.payments
+    ? ([
+        {
+          path: '/recharge',
+          name: '余额充值',
+          i18nKey: 'consoleMenu.recharge',
+          icon: 'platform',
+          roles: ['admin', 'client'],
+        },
+        {
+          path: '/payment-orders',
+          name: '收款订单（试验）',
+          i18nKey: 'consoleMenu.experimentalPaymentOrders',
+          icon: 'audit',
+          roles: ['admin'],
+        },
+      ] satisfies MenuNode[])
+    : []),
 ]
 
 export function menuForRole(activeRole?: UserRole): MenuNode[] {

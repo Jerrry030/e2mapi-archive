@@ -5,8 +5,10 @@
 | 模块 | 前端构建开关 | Core 运行开关 |
 | --- | --- | --- |
 | 旧费用估算 | `VITE_E2M_ENABLE_BILLING` | `E2M_ENABLE_BILLING` |
-| 支付订单与配置 | `VITE_E2M_ENABLE_PAYMENTS` | `E2M_ENABLE_PAYMENTS` |
+| 支付（配置/渠道/订单/充值下单/webhook/到期清扫） | `VITE_E2M_ENABLE_PAYMENTS` | `E2M_ENABLE_PAYMENTS` |
 | 供给登记与分配 | `VITE_E2M_ENABLE_SUPPLY` | `E2M_ENABLE_SUPPLY` |
+
+支付开关是完整充值闭环的唯一 Core 门禁：管理端支付配置与订单、用户充值下单、支付渠道 webhook 回调都在它之下 fail-closed，到期清扫后台任务也只在它开启时启动（清扫间隔 `E2M_PAYMENT_EXPIRY_INTERVAL`，默认 60s）。历史上 webhook 与充值下单还要求 `E2M_ENABLE_HYBRID_SUPPLY`；该耦合已移除，hybrid 开关只保留给已退役的比例路由实验路径。
 
 前端开关控制菜单和页面路由；Core 开关在认证 API 入口拦截相应请求，并对关闭模块返回 `404 feature_disabled`。两端任一关闭，都不能把模块视为可对外使用。
 

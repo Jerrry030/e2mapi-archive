@@ -352,6 +352,13 @@ type Store interface {
 	// CancelPendingPaymentOrder atomically transitions a purely local PENDING
 	// order with no upstream trade number and appends the supplied explicit audit.
 	CancelPendingPaymentOrder(ctx context.Context, id string, audit contracts.OperationAudit) (contracts.PaymentOrder, error)
+	// ListExpiredPendingPaymentOrders returns unconfirmed PENDING orders whose
+	// expiry deadline has passed, oldest deadline first, for the expiry sweeper.
+	ListExpiredPendingPaymentOrders(ctx context.Context, cutoff time.Time, limit int) ([]contracts.PaymentOrder, error)
+	// ExpirePaymentOrder atomically transitions an unconfirmed PENDING order to
+	// EXPIRED and appends the supplied explicit audit. A confirmed or already
+	// terminal order returns ErrConflict so a racing webhook always wins.
+	ExpirePaymentOrder(ctx context.Context, id string, audit contracts.OperationAudit) (contracts.PaymentOrder, error)
 	GetPaymentOrderByOutTradeNo(ctx context.Context, outTradeNo string) (contracts.PaymentOrder, error)
 	// ConfirmRechargePayment atomically records the verified provider event,
 	// transitions PENDING -> COMPLETED and credits the wallet with a balanced

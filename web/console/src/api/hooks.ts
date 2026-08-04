@@ -132,6 +132,17 @@ export function usePaymentOrder(id?: string) {
   })
 }
 
+export function useCreateRechargeOrder() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: import('./types').CreateRechargeOrderInput) =>
+      endpoints.createRechargeOrder(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'payment', 'orders'] })
+    },
+  })
+}
+
 export function useCancelPaymentOrder() {
   const qc = useQueryClient()
   const { message } = App.useApp()

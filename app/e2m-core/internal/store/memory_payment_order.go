@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"e2m.local/contracts"
 )
@@ -323,6 +324,65 @@ func (s *MemoryStore) CancelPendingPaymentOrder(ctx context.Context, id string, 
 		}
 		now := s.now()
 		order.Status = contracts.PaymentOrderCancelled
+		order.UpdatedAt = now
+		if !audit.EventLevel.Valid() {
+			audit.EventLevel = contracts.DefaultEventLevel(audit.RiskLevel, audit.Result)
+		}
+		if audit.ID == "" {
+			audit.ID = s.nextID("audit")
+		}
+		if audit.CreatedAt.IsZero() {
+			audit.CreatedAt = now
+		}
+		audit.UserID = order.UserID
+		audit.TargetType = "payment_order"
+		audit.TargetID = order.ID
+		s.audits = append(s.audits, audit)
+		return copyPaymentOrder(*order), nil
+	}
+	return contracts.PaymentOrder{}, ErrNotFound
+}
+
+func (s *MemoryStore) ListExpiredPendingPaymentOrders(ctx context.Context, cutoff time.Time, limit int) ([]contracts.PaymentOrder, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = maxPaymentOrderPageSize
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []contracts.PaymentOrder{}
+	for _, order := range s.paymentOrders {
+		if order.Status != contracts.PaymentOrderPending || strings.TrimSpace(order.PaymentTradeNo) != "" ||
+			order.ExpiresAt.IsZero() || order.ExpiresAt.After(cutoff) {
+			continue
+		}
+		out = append(out, copyPaymentOrder(order))
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ExpiresAt.Before(out[j].ExpiresAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) ExpirePaymentOrder(ctx context.Context, id string, audit contracts.OperationAudit) (contracts.PaymentOrder, error) {
+	if err := ctx.Err(); err != nil {
+		return contracts.PaymentOrder{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.paymentOrders {
+		order := &s.paymentOrders[i]
+		if order.ID != id {
+			continue
+		}
+		if order.Status != contracts.PaymentOrderPending || strings.TrimSpace(order.PaymentTradeNo) != "" {
+			return contracts.PaymentOrder{}, ErrConflict
+		}
+		now := s.now()
+		order.Status = contracts.PaymentOrderExpired
 		order.UpdatedAt = now
 		if !audit.EventLevel.Valid() {
 			audit.EventLevel = contracts.DefaultEventLevel(audit.RiskLevel, audit.Result)

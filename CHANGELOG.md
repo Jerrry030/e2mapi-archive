@@ -4,7 +4,21 @@
 
 ## [Unreleased]
 
-后续变更将在此处记录。
+### Added
+
+- 支付模块接线：注册管理端支付配置/渠道/订单 API、用户充值下单 API 和 Stripe webhook 回调路由，全部由 `E2M_ENABLE_PAYMENTS` 运行开关控制（默认关闭，关闭时返回 `404 feature_disabled`）。
+- 新增支付订单到期清扫后台任务：超时未支付订单在关闭上游会话后转为 EXPIRED；清扫前主动查询上游，已支付但回调丢失的订单走与 webhook 相同的恰好一次入账路径补单（`E2M_PAYMENT_EXPIRY_INTERVAL` 可调，默认 60s）。
+- 控制台（`VITE_E2M_ENABLE_PAYMENTS` 构建开关下）：新增用户"余额充值"页（金额与支付方式选择 → 创建订单 → 跳转服务商托管支付页）与支付结果/取消回跳页；挂载既有"收款订单（试验）"管理页与系统设置支付 tab 到路由和菜单。
+- 新增 EasyPay（易支付聚合协议）收款渠道：MD5 签名的托管支付页下单、GET/POST notify 回调验签（应答纯文本 success）、商户查单 API；充值下单按渠道选择 Stripe 或 EasyPay（支付宝/微信类型，仅 CNY），到期清扫器对 EasyPay 订单同样先查单补单再本地过期。
+
+### Fixed
+
+- 修复充值日限额只统计当日前 100 笔已完成订单的缺陷，改为分页累加并在异常规模时保守拒绝。
+- 修复文件 Vault 的可用性缺陷：`Resolve` 的跨进程刷新重载失败时（如路径读错误），不再拒绝服务本进程内存中一致持有的凭证；仅当内存中也没有该引用时才返回读错误。该缺陷因 Linux/Windows 错误码映射差异只在 Linux 暴露，曾导致 `file_test.go` 两个失败注入测试稳定失败。
+
+### Changed
+
+- 支付相关路径（含 webhook 与充值下单）的功能门禁不再依赖已退役的 `E2M_ENABLE_HYBRID_SUPPLY` 实验开关，仅由 `E2M_ENABLE_PAYMENTS` 控制。
 
 ## [0.3.0] - 2026-08-01
 

@@ -114,6 +114,62 @@ func (s Stripe) ExpireCheckout(ctx context.Context, input CheckoutExpiryRequest)
 	return nil
 }
 
+func (s Stripe) QueryCheckout(ctx context.Context, input CheckoutQueryRequest) (CheckoutQueryResult, error) {
+	providerOrderID := strings.TrimSpace(input.ProviderOrderID)
+	if providerOrderID == "" || len(providerOrderID) > 128 || strings.ContainsAny(providerOrderID, "/?#\\") {
+		return CheckoutQueryResult{}, errors.New("stripe: invalid checkout session id")
+	}
+	base := strings.TrimRight(strings.TrimSpace(input.APIBaseURL), "/")
+	if base == "" {
+		base = defaultStripeAPIBase
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/checkout/sessions/"+url.PathEscape(providerOrderID), nil)
+	if err != nil {
+		return CheckoutQueryResult{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+input.SecretKey)
+	client := s.Client
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return CheckoutQueryResult{}, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return CheckoutQueryResult{}, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return CheckoutQueryResult{}, fmt.Errorf("stripe: query checkout returned HTTP %d", response.StatusCode)
+	}
+	var result struct {
+		ID            string `json:"id"`
+		PaymentStatus string `json:"payment_status"`
+		PaymentIntent string `json:"payment_intent"`
+		AmountTotal   int64  `json:"amount_total"`
+		Currency      string `json:"currency"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return CheckoutQueryResult{}, err
+	}
+	if result.ID != providerOrderID {
+		return CheckoutQueryResult{}, errors.New("stripe: query checkout returned a different session")
+	}
+	if result.PaymentStatus != "paid" {
+		return CheckoutQueryResult{}, nil
+	}
+	if result.PaymentIntent == "" || result.AmountTotal <= 0 || len(result.Currency) != 3 {
+		return CheckoutQueryResult{}, errors.New("stripe: paid checkout response is incomplete")
+	}
+	return CheckoutQueryResult{
+		Paid: true, PaymentTradeNo: result.PaymentIntent,
+		PaidAmountMicros: result.AmountTotal * 10_000,
+		Currency:         strings.ToUpper(result.Currency),
+	}, nil
+}
+
 func (Stripe) VerifyNotification(payload []byte, signature, webhookSecret string, now time.Time) (VerifiedNotification, error) {
 	timestamp, signatures, err := parseStripeSignature(signature)
 	if err != nil || timestamp < now.Add(-5*time.Minute).Unix() || timestamp > now.Add(5*time.Minute).Unix() {

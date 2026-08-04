@@ -244,6 +244,13 @@ func (s *Server) Routes() http.Handler {
 	public.HandleFunc("POST /api/v1/connectors/tasks/lease", s.handleLeaseConnectorTasks)
 	public.HandleFunc("POST /api/v1/connectors/tasks/{id}/execute", s.handleBeginConnectorTaskExecution)
 	public.HandleFunc("POST /api/v1/connectors/tasks/{id}/complete", s.handleCompleteConnectorTask)
+	// Provider callbacks authenticate by signature, not session; the business
+	// feature gate still fail-closes these paths unless payments are enabled.
+	// EasyPay gateways deliver the notify as GET or POST depending on operator
+	// configuration, so both methods are accepted.
+	public.HandleFunc("POST /api/v1/payment/webhooks/stripe/{providerId}", s.handleStripeWebhook)
+	public.HandleFunc("GET /api/v1/payment/webhooks/easypay/{providerId}", s.handleEasyPayWebhook)
+	public.HandleFunc("POST /api/v1/payment/webhooks/easypay/{providerId}", s.handleEasyPayWebhook)
 
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/auth/me", s.handleMe)
@@ -289,6 +296,16 @@ func (s *Server) Routes() http.Handler {
 	api.HandleFunc("GET /api/v1/secrets", s.handleListSecrets)
 	api.HandleFunc("POST /api/v1/secrets", s.handleUpsertSecret)
 	api.HandleFunc("DELETE /api/v1/secrets", s.handleDeleteSecret)
+	api.HandleFunc("GET /api/v1/admin/payment/config", s.handleGetPaymentConfig)
+	api.HandleFunc("PUT /api/v1/admin/payment/config", s.handleUpdatePaymentConfig)
+	api.HandleFunc("GET /api/v1/admin/payment/providers", s.handleListPaymentProviders)
+	api.HandleFunc("POST /api/v1/admin/payment/providers", s.handleCreatePaymentProvider)
+	api.HandleFunc("PUT /api/v1/admin/payment/providers/{id}", s.handleUpdatePaymentProvider)
+	api.HandleFunc("DELETE /api/v1/admin/payment/providers/{id}", s.handleDeletePaymentProvider)
+	api.HandleFunc("GET /api/v1/admin/payment/orders", s.handleListPaymentOrders)
+	api.HandleFunc("GET /api/v1/admin/payment/orders/{id}", s.handleGetPaymentOrder)
+	api.HandleFunc("POST /api/v1/admin/payment/orders/{id}/cancel", s.handleCancelPaymentOrder)
+	api.HandleFunc("POST /api/v1/owner/hybrid-supply/recharge-orders", s.handleCreateRechargeOrder)
 	s.registerPlatformDistributionRoutes(api)
 
 	mux := http.NewServeMux()
@@ -301,9 +318,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/v1/connectors/tasks/lease", public)
 	mux.Handle("POST /api/v1/connectors/tasks/{id}/execute", public)
 	mux.Handle("POST /api/v1/connectors/tasks/{id}/complete", public)
+	mux.Handle("/api/v1/payment/webhooks/", public)
 	mux.Handle("/api/", s.withAuth(api))
 
-	apiHandler := withJSON(mux)
+	// The business gates run before authentication so disabled commercial
+	// modules answer 404 feature_disabled on every path, including webhooks.
+	apiHandler := withJSON(s.withBusinessFeatureGates(mux))
 	if s.corsDev {
 		apiHandler = withDevCORS(apiHandler)
 	}

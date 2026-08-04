@@ -191,6 +191,18 @@ export interface PaymentOrderDetail {
   audit_logs: OperationAudit[]
 }
 
+export interface CreateRechargeOrderInput {
+  amount: string
+  currency?: string
+  payment_type: string
+  return_url?: string
+}
+
+export interface RechargeOrderResponse {
+  order: PaymentOrder
+  checkout_url: string
+}
+
 export type SecretKind = 'notification' | 'upstream' | 'proxy'
 
 export interface SecretRef {

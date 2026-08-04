@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { endpoints, type UpdateUserInput } from './endpoints'
-import type { CreatePaymentProviderInput, UpdatePaymentProviderInput } from './types'
+import type {
+  CreatePaymentProviderInput,
+  CreateRechargeOrderInput,
+  UpdatePaymentProviderInput,
+} from './types'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -104,6 +108,25 @@ describe('administrator operation endpoints', () => {
       4,
       '/api/v1/admin/payment/providers/payprov-1',
       expect.objectContaining({ method: 'DELETE' }),
+    )
+  })
+
+  it('creates recharge orders through the owner route', async () => {
+    const fetchMock = mockResponse({
+      order: { id: 'payord-1', status: 'PENDING' },
+      checkout_url: 'https://checkout.stripe.example/session/cs_1',
+    })
+    const body: CreateRechargeOrderInput = {
+      amount: '10.00',
+      currency: 'CNY',
+      payment_type: 'stripe',
+    }
+
+    await endpoints.createRechargeOrder(body)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/owner/hybrid-supply/recharge-orders',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify(body) }),
     )
   })
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"e2m.local/contracts"
 	"github.com/jackc/pgx/v5"
@@ -322,6 +323,82 @@ func (s *PostgresStore) CancelPendingPaymentOrder(ctx context.Context, id string
 		SET status=$2, updated_at=statement_timestamp()
 		WHERE id=$1 AND status=$3 AND payment_trade_no=''
 		RETURNING `+paymentOrderColumns, id, string(contracts.PaymentOrderCancelled), string(contracts.PaymentOrderPending)))
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return contracts.PaymentOrder{}, err
+		}
+		var exists bool
+		if lookupErr := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM payment_orders WHERE id=$1)`, id).Scan(&exists); lookupErr != nil {
+			return contracts.PaymentOrder{}, lookupErr
+		}
+		if !exists {
+			return contracts.PaymentOrder{}, ErrNotFound
+		}
+		return contracts.PaymentOrder{}, ErrConflict
+	}
+	if audit.ID == "" {
+		audit.ID = newID("audit")
+	}
+	audit.UserID = order.UserID
+	audit.TargetType = "payment_order"
+	audit.TargetID = order.ID
+	if audit.CreatedAt.IsZero() {
+		audit.CreatedAt = nowUTC()
+	}
+	if !audit.EventLevel.Valid() {
+		audit.EventLevel = contracts.DefaultEventLevel(audit.RiskLevel, audit.Result)
+	}
+	details, err := json.Marshal(audit.Details)
+	if err != nil {
+		return contracts.PaymentOrder{}, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO operation_audits
+		(id,user_id,instance_id,actor_type,actor_id,action,risk_level,event_level,target_type,target_id,
+		 request_payload_hash,result,error_message,approval_id,workflow_run_id,details,created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17)`,
+		audit.ID, audit.UserID, audit.InstanceID, audit.ActorType, audit.ActorID, audit.Action,
+		string(audit.RiskLevel), string(audit.EventLevel), audit.TargetType, audit.TargetID, audit.RequestHash, audit.Result,
+		audit.ErrorMessage, audit.ApprovalID, audit.WorkflowRunID, string(details), audit.CreatedAt); err != nil {
+		return contracts.PaymentOrder{}, fmt.Errorf("append payment order audit: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return contracts.PaymentOrder{}, err
+	}
+	return order, nil
+}
+
+func (s *PostgresStore) ListExpiredPendingPaymentOrders(ctx context.Context, cutoff time.Time, limit int) ([]contracts.PaymentOrder, error) {
+	if limit <= 0 {
+		limit = maxPaymentOrderPageSize
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+paymentOrderColumns+` FROM payment_orders
+		WHERE status=$1 AND payment_trade_no='' AND expires_at <= $2
+		ORDER BY expires_at, id LIMIT $3`, string(contracts.PaymentOrderPending), cutoff.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []contracts.PaymentOrder{}
+	for rows.Next() {
+		order, scanErr := scanPaymentOrder(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, order)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) ExpirePaymentOrder(ctx context.Context, id string, audit contracts.OperationAudit) (contracts.PaymentOrder, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return contracts.PaymentOrder{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	order, err := scanPaymentOrder(tx.QueryRow(ctx, `UPDATE payment_orders
+		SET status=$2, updated_at=statement_timestamp()
+		WHERE id=$1 AND status=$3 AND payment_trade_no=''
+		RETURNING `+paymentOrderColumns, id, string(contracts.PaymentOrderExpired), string(contracts.PaymentOrderPending)))
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return contracts.PaymentOrder{}, err

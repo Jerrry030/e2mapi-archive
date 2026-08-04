@@ -28,10 +28,13 @@ func (s *Server) withBusinessFeatureGates(next http.Handler) http.Handler {
 		switch {
 		case pathWithin(path, "/api/v1/billing"):
 			disabled = !s.businessFeatures.Billing
-		case pathWithin(path, "/api/v1/admin/payment"), pathWithin(path, "/api/v1/payment/webhooks"):
-			disabled = !s.businessFeatures.Payments || pathWithin(path, "/api/v1/payment/webhooks") && !s.businessFeatures.HybridSupply
-		case pathWithin(path, "/api/v1/owner/hybrid-supply/recharge-orders"):
-			disabled = !s.businessFeatures.Payments || !s.businessFeatures.HybridSupply
+		// The platform wallet is a native product surface, so the whole top-up
+		// loop (admin config, provider webhooks, recharge orders) hangs off the
+		// payments switch alone. The retired hybrid routing experiment keeps its
+		// own switch below.
+		case pathWithin(path, "/api/v1/admin/payment"), pathWithin(path, "/api/v1/payment/webhooks"),
+			pathWithin(path, "/api/v1/owner/hybrid-supply/recharge-orders"):
+			disabled = !s.businessFeatures.Payments
 		case pathWithin(path, "/api/v1/owner/hybrid-supply"), pathWithin(path, "/api/v1/admin/hybrid-supply"):
 			disabled = !s.businessFeatures.HybridSupply
 		case pathWithin(path, "/api/v1/supply-offers"), pathWithin(path, "/api/v1/supply-ledger"):

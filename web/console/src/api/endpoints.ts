@@ -34,12 +34,14 @@ import type {
   OwnerOnboarding,
   OwnerPoolHealth,
   PublishedBinding,
+  CreateRechargeOrderInput,
   PaymentConfig,
   PaymentOrder,
   PaymentOrderDetail,
   PaymentOrderListParams,
   PaymentOrderPage,
   PaymentProvider,
+  RechargeOrderResponse,
   PlatformGroup,
   PlatformApiKey,
   PlatformListResponse,
@@ -311,6 +313,11 @@ export const endpoints = {
   deletePaymentProvider: (id: string) =>
     apiClient.request<{ ok: boolean }>(`/admin/payment/providers/${id}`, { method: 'DELETE' }),
 
+  createRechargeOrder: (body: CreateRechargeOrderInput) =>
+    apiClient.request<RechargeOrderResponse>('/owner/hybrid-supply/recharge-orders', {
+      method: 'POST',
+      body,
+    }),
   listPaymentOrders: (query: PaymentOrderListParams) =>
     apiClient.request<PaymentOrderPage>('/admin/payment/orders', { query: { ...query } }),
   getPaymentOrder: (id: string) =>

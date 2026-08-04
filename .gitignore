@@ -40,3 +40,6 @@ app/e2m-core/internal/webui/dist/*
 
 # Vendored dependencies are not used in this workspace.
 vendor/
+
+# Local Docker secret material (compose templates reference these paths)
+deployments/templates/compose/secrets/

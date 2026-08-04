@@ -27,6 +27,7 @@ import (
 	"e2m.local/core/internal/notify"
 	"e2m.local/core/internal/operationalmetrics"
 	"e2m.local/core/internal/orchestrator"
+	"e2m.local/core/internal/paymentexpiry"
 	"e2m.local/core/internal/publish"
 	"e2m.local/core/internal/retirement"
 	"e2m.local/core/internal/store"
@@ -122,7 +123,14 @@ func run() error {
 	if lifecycle, ok := store.AsUpstreamLifecycleStore(st); ok {
 		retirementWorker = retirement.New(lifecycle, publisher, poolRetirementInterval()).Run
 	}
-	workers := buildCoreWorkers(checker.Run, notifyWorker.Run, retirementWorker)
+	// The payment expiry sweeper only matters when the payments module is
+	// enabled: it closes timed-out checkout sessions and recovers payments
+	// whose webhook never arrived.
+	var paymentExpiryWorker coreWorker
+	if getenv("E2M_ENABLE_PAYMENTS", "") == "true" {
+		paymentExpiryWorker = paymentexpiry.New(st, v, paymentExpiryInterval()).Run
+	}
+	workers := buildCoreWorkers(checker.Run, notifyWorker.Run, retirementWorker, paymentExpiryWorker)
 	server := httpapi.NewServer(st, orch, checker, nil, nil, authSvc, events, publisher)
 	server.SetVault(v)
 	server.SetDeliveryKeyVerifier(keyVerifier)
@@ -135,6 +143,14 @@ func run() error {
 	if getenv("E2M_SUPPLY_ALLOW_INSECURE_UPSTREAMS", "") == "true" || getenv("E2M_ALLOW_INSECURE_SUPPLY_UPSTREAMS", "") == "true" {
 		server.EnableInsecureSupplyUpstreams()
 	}
+	server.SetBusinessFeatureFlags(httpapi.BusinessFeatureFlags{
+		Billing:                   getenv("E2M_ENABLE_BILLING", "") == "true",
+		Payments:                  getenv("E2M_ENABLE_PAYMENTS", "") == "true",
+		Supply:                    getenv("E2M_ENABLE_SUPPLY", "") == "true",
+		HybridSupply:              getenv("E2M_ENABLE_HYBRID_SUPPLY", "") == "true",
+		UpstreamRecommendations:   getenv("E2M_UPSTREAM_RECOMMENDATIONS", "") == "true",
+		UpstreamOptimizationApply: getenv("E2M_UPSTREAM_OPTIMIZATION_AUTO_APPLY", "") == "true",
+	})
 	supplyHandler, err := supplygateway.New(st, v, supplygateway.Config{Currency: getenv("E2M_SUPPLY_CURRENCY", "CNY")})
 	if err != nil {
 		return fmt.Errorf("e2m-core supply gateway init failed: %w", err)
@@ -373,14 +389,23 @@ func poolRetirementInterval() time.Duration {
 	return retirement.DefaultInterval
 }
 
-func buildCoreWorkers(checker, notification, poolRetirement coreWorker) []coreWorker {
-	workers := make([]coreWorker, 0, 3)
-	for _, worker := range []coreWorker{checker, notification, poolRetirement} {
-		if worker != nil {
-			workers = append(workers, worker)
+func paymentExpiryInterval() time.Duration {
+	if value := strings.TrimSpace(os.Getenv("E2M_PAYMENT_EXPIRY_INTERVAL")); value != "" {
+		if parsed, err := time.ParseDuration(value); err == nil && parsed > 0 {
+			return parsed
 		}
 	}
-	return workers
+	return paymentexpiry.DefaultInterval
+}
+
+func buildCoreWorkers(workers ...coreWorker) []coreWorker {
+	out := make([]coreWorker, 0, len(workers))
+	for _, worker := range workers {
+		if worker != nil {
+			out = append(out, worker)
+		}
+	}
+	return out
 }
 
 type reconcileNotifier struct {
