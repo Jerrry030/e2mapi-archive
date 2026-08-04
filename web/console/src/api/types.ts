@@ -198,6 +198,63 @@ export interface CreateRechargeOrderInput {
   return_url?: string
 }
 
+export type RedeemCodeType = 'balance' | 'invitation'
+export type RedeemCodeStatus = 'unused' | 'used' | 'disabled' | 'expired'
+
+export interface RedeemCode {
+  id: string
+  type: RedeemCodeType
+  code_prefix: string
+  currency: string
+  amount_micros: number
+  status: RedeemCodeStatus
+  batch_id: string
+  notes?: string
+  expires_at?: string
+  used_by?: number
+  used_at?: string
+  created_by: number
+  created_at: string
+  updated_at: string
+}
+
+export interface RedeemCodePage {
+  items: RedeemCode[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface RedeemCodeListParams {
+  type?: RedeemCodeType
+  status?: RedeemCodeStatus
+  batch_id?: string
+  page?: number
+  page_size?: number
+}
+
+export interface GenerateRedeemCodesInput {
+  type: RedeemCodeType
+  count: number
+  amount?: string
+  currency?: string
+  notes?: string
+  expires_at?: string
+}
+
+export interface GenerateRedeemCodesResponse {
+  batch_id: string
+  codes: string[]
+  items: RedeemCode[]
+}
+
+export interface RedeemResponse {
+  type: RedeemCodeType
+  amount_micros: number
+  currency: string
+  wallet: PlatformWallet
+}
+
 export interface RechargeOrderResponse {
   order: PaymentOrder
   checkout_url: string

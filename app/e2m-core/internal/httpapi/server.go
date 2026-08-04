@@ -62,6 +62,8 @@ type Server struct {
 	intelligenceCursorActiveKID        string
 	intelligenceCursorKeys             map[string][32]byte
 	paymentMu                          sync.Mutex
+	redeemLimiterMu                    sync.Mutex
+	redeemFailures                     map[int64][]time.Time
 	keyProof                           DeliveryKeyVerifier
 	hybridBindings                     HybridBindingProvisioner
 	publicBaseURL                      string
@@ -306,6 +308,12 @@ func (s *Server) Routes() http.Handler {
 	api.HandleFunc("GET /api/v1/admin/payment/orders/{id}", s.handleGetPaymentOrder)
 	api.HandleFunc("POST /api/v1/admin/payment/orders/{id}/cancel", s.handleCancelPaymentOrder)
 	api.HandleFunc("POST /api/v1/owner/hybrid-supply/recharge-orders", s.handleCreateRechargeOrder)
+	api.HandleFunc("POST /api/v1/admin/redeem-codes", s.handleGenerateRedeemCodes)
+	api.HandleFunc("GET /api/v1/admin/redeem-codes", s.handleListRedeemCodes)
+	api.HandleFunc("POST /api/v1/admin/redeem-codes/create-and-redeem", s.handleCreateAndRedeem)
+	api.HandleFunc("POST /api/v1/admin/redeem-codes/{id}/disable", s.handleDisableRedeemCode)
+	api.HandleFunc("DELETE /api/v1/admin/redeem-codes/{id}", s.handleDeleteRedeemCode)
+	api.HandleFunc("POST /api/v1/redeem", s.handleRedeemCode)
 	s.registerPlatformDistributionRoutes(api)
 
 	mux := http.NewServeMux()

@@ -33,7 +33,8 @@ func (s *Server) withBusinessFeatureGates(next http.Handler) http.Handler {
 		// payments switch alone. The retired hybrid routing experiment keeps its
 		// own switch below.
 		case pathWithin(path, "/api/v1/admin/payment"), pathWithin(path, "/api/v1/payment/webhooks"),
-			pathWithin(path, "/api/v1/owner/hybrid-supply/recharge-orders"):
+			pathWithin(path, "/api/v1/owner/hybrid-supply/recharge-orders"),
+			pathWithin(path, "/api/v1/admin/redeem-codes"), pathWithin(path, "/api/v1/redeem"):
 			disabled = !s.businessFeatures.Payments
 		case pathWithin(path, "/api/v1/owner/hybrid-supply"), pathWithin(path, "/api/v1/admin/hybrid-supply"):
 			disabled = !s.businessFeatures.HybridSupply

@@ -16,6 +16,8 @@ import PaymentResult from './pages/PaymentResult'
 import PlatformDistribution from './pages/PlatformDistribution'
 import PoolHealth from './pages/PoolHealth'
 import Recharge from './pages/Recharge'
+import Redeem from './pages/Redeem'
+import RedeemCodes from './pages/RedeemCodes'
 import Register from './pages/Register'
 import SystemSettings from './pages/SystemSettings'
 import Users from './pages/Users'
@@ -51,6 +53,8 @@ export const router = createBrowserRouter([
       ...(consoleFeatureFlags.payments
         ? [
             { path: 'recharge', element: rolePage(owners, <Recharge />) },
+            { path: 'redeem', element: rolePage(owners, <Redeem />) },
+            { path: 'redeem-codes', element: rolePage(platform, <RedeemCodes />) },
             { path: 'payment/success', element: rolePage(owners, <PaymentResult outcome="success" />) },
             {
               path: 'payment/cancelled',

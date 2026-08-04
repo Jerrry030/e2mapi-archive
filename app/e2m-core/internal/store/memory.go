@@ -86,6 +86,7 @@ type MemoryStore struct {
 	paymentConfig                   *contracts.PaymentConfig
 	paymentProviders                []contracts.PaymentProvider
 	paymentOrders                   []contracts.PaymentOrder
+	redeemCodes                     []contracts.RedeemCode
 	users                           []contracts.User
 	sessions                        map[string]contracts.Session // tokenHash -> session
 	nextUserID                      int64

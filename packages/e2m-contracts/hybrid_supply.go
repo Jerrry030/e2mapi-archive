@@ -324,6 +324,7 @@ type WalletJournalKind string
 const (
 	WalletJournalRecharge   WalletJournalKind = "recharge"
 	WalletJournalAdjustment WalletJournalKind = "adjustment"
+	WalletJournalRedeem     WalletJournalKind = "redeem"
 	WalletJournalReserve    WalletJournalKind = "reserve"
 	WalletJournalSettle     WalletJournalKind = "settle"
 	WalletJournalRelease    WalletJournalKind = "release"

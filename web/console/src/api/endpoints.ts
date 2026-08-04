@@ -35,6 +35,12 @@ import type {
   OwnerPoolHealth,
   PublishedBinding,
   CreateRechargeOrderInput,
+  GenerateRedeemCodesInput,
+  GenerateRedeemCodesResponse,
+  RedeemCode,
+  RedeemCodeListParams,
+  RedeemCodePage,
+  RedeemResponse,
   PaymentConfig,
   PaymentOrder,
   PaymentOrderDetail,
@@ -318,6 +324,16 @@ export const endpoints = {
       method: 'POST',
       body,
     }),
+  redeemCode: (code: string) =>
+    apiClient.request<RedeemResponse>('/redeem', { method: 'POST', body: { code } }),
+  generateRedeemCodes: (body: GenerateRedeemCodesInput) =>
+    apiClient.request<GenerateRedeemCodesResponse>('/admin/redeem-codes', { method: 'POST', body }),
+  listRedeemCodes: (query: RedeemCodeListParams) =>
+    apiClient.request<RedeemCodePage>('/admin/redeem-codes', { query: { ...query } }),
+  disableRedeemCode: (id: string) =>
+    apiClient.request<RedeemCode>(`/admin/redeem-codes/${id}/disable`, { method: 'POST' }),
+  deleteRedeemCode: (id: string) =>
+    apiClient.request<{ ok: boolean }>(`/admin/redeem-codes/${id}`, { method: 'DELETE' }),
   listPaymentOrders: (query: PaymentOrderListParams) =>
     apiClient.request<PaymentOrderPage>('/admin/payment/orders', { query: { ...query } }),
   getPaymentOrder: (id: string) =>

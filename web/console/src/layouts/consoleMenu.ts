@@ -108,6 +108,20 @@ export const consoleMenu: MenuNode[] = [
           roles: ['admin', 'client'],
         },
         {
+          path: '/redeem',
+          name: '兑换码',
+          i18nKey: 'consoleMenu.redeem',
+          icon: 'platform',
+          roles: ['admin', 'client'],
+        },
+        {
+          path: '/redeem-codes',
+          name: '兑换码管理',
+          i18nKey: 'consoleMenu.redeemCodes',
+          icon: 'audit',
+          roles: ['admin'],
+        },
+        {
           path: '/payment-orders',
           name: '收款订单（试验）',
           i18nKey: 'consoleMenu.experimentalPaymentOrders',

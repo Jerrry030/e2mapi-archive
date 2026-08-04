@@ -360,6 +360,17 @@ type Store interface {
 	// terminal order returns ErrConflict so a racing webhook always wins.
 	ExpirePaymentOrder(ctx context.Context, id string, audit contracts.OperationAudit) (contracts.PaymentOrder, error)
 	GetPaymentOrderByOutTradeNo(ctx context.Context, outTradeNo string) (contracts.PaymentOrder, error)
+
+	// Redeem codes are bearer instruments; the store only ever sees SHA-256
+	// hashes of the plaintext. RedeemBalanceCode atomically consumes an unused
+	// balance code and credits the wallet with a balanced redeem journal; every
+	// non-unused state returns ErrConflict so a double redeem has one winner.
+	CreateRedeemCodes(ctx context.Context, codes []contracts.RedeemCode) ([]contracts.RedeemCode, error)
+	GetRedeemCodeByHash(ctx context.Context, codeHash string) (contracts.RedeemCode, error)
+	ListRedeemCodes(ctx context.Context, filter contracts.RedeemCodeFilter) (contracts.RedeemCodePage, error)
+	DisableRedeemCode(ctx context.Context, id string) (contracts.RedeemCode, error)
+	DeleteUnusedRedeemCode(ctx context.Context, id string) error
+	RedeemBalanceCode(ctx context.Context, codeHash string, userID int64, now time.Time) (contracts.RedeemCode, contracts.Wallet, error)
 	// ConfirmRechargePayment atomically records the verified provider event,
 	// transitions PENDING -> COMPLETED and credits the wallet with a balanced
 	// double-entry journal. Duplicate provider events or already completed orders

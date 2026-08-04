@@ -130,6 +130,42 @@ describe('administrator operation endpoints', () => {
     )
   })
 
+  it('uses the redeem code routes', async () => {
+    const fetchMock = mockResponse({ items: [], total: 0, page: 1, page_size: 20 })
+
+    await endpoints.redeemCode('AAAA-BBBB')
+    await endpoints.generateRedeemCodes({ type: 'balance', count: 5, amount: '10.00' })
+    await endpoints.listRedeemCodes({ status: 'unused', page: 2 })
+    await endpoints.disableRedeemCode('redeem-1')
+    await endpoints.deleteRedeemCode('redeem-1')
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/v1/redeem',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ code: 'AAAA-BBBB' }) }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/v1/admin/redeem-codes',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/v1/admin/redeem-codes?status=unused&page=2',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      '/api/v1/admin/redeem-codes/redeem-1/disable',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      '/api/v1/admin/redeem-codes/redeem-1',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+  })
+
   it('queries and cancels payment orders through administrator routes', async () => {
     const fetchMock = mockResponse({ items: [], total: 0, page: 2, page_size: 20 })
 
