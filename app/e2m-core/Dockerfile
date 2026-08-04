@@ -10,6 +10,15 @@ COPY web/console/package.json web/console/package-lock.json* ./
 RUN npm ci
 
 COPY web/console/ ./
+# Console feature flags are baked at build time. Keep them aligned with the
+# matching E2M_ENABLE_* runtime switches on the Core container
+# (docs/development/feature-flags.md).
+ARG VITE_E2M_ENABLE_PAYMENTS=false
+ARG VITE_E2M_ENABLE_BILLING=false
+ARG VITE_E2M_ENABLE_SUPPLY=false
+ENV VITE_E2M_ENABLE_PAYMENTS=${VITE_E2M_ENABLE_PAYMENTS} \
+    VITE_E2M_ENABLE_BILLING=${VITE_E2M_ENABLE_BILLING} \
+    VITE_E2M_ENABLE_SUPPLY=${VITE_E2M_ENABLE_SUPPLY}
 RUN npm run build
 
 # --- stage 2: build the Go binary with the embedded console ---
