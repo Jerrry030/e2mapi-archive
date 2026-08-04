@@ -4,6 +4,7 @@ import {
   Alert,
   App,
   Button,
+  Divider,
   Form,
   Input,
   InputNumber,
@@ -13,8 +14,15 @@ import {
   Space,
   Table,
   Tag,
+  Typography,
 } from 'antd'
-import { EditOutlined, PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import {
+  EditOutlined,
+  MinusCircleOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  ThunderboltOutlined,
+} from '@ant-design/icons'
 import {
   useCreatePlatformUpstream,
   useDeletePlatformUpstream,
@@ -24,22 +32,17 @@ import {
   useUpdatePlatformUpstream,
 } from '../api/platformDistributionHooks'
 import type { PlatformUpstream } from '../api/types'
+import {
+  COOLDOWN_RULES_LABEL,
+  MODEL_MAPPING_LABEL,
+  cooldownRowsFromLabel,
+  labelsFromForm,
+  modelMappingRowsFromLabel,
+  otherLabelsText,
+} from './upstreamLabels'
 import { t } from '../i18n'
 import { useLocaleVersion } from '../i18n/react'
 
-function parseLabels(value: unknown): Record<string, string> {
-  const labels: Record<string, string> = {}
-  for (const entry of String(value ?? '').split(',')) {
-    const [rawKey, ...rawValue] = entry.split('=')
-    const key = rawKey?.trim()
-    const labelValue = rawValue.join('=').trim()
-    if (key && labelValue) labels[key] = labelValue
-  }
-  return labels
-}
-
-// PlatformUpstreams is the dedicated admin page for upstream accounts: the
-// OpenAI-compatible supplier credentials E2M schedules within a group.
 export default function PlatformUpstreams() {
   useLocaleVersion()
   const { message } = App.useApp()
@@ -93,9 +96,9 @@ export default function PlatformUpstreams() {
         ? upstream.capacity.max_request_micros / 1_000_000
         : undefined,
       status: upstream.status,
-      labels: Object.entries(upstream.labels ?? {})
-        .map(([key, value]) => `${key}=${value}`)
-        .join(', '),
+      labels: otherLabelsText(upstream.labels),
+      model_mapping: modelMappingRowsFromLabel(upstream.labels?.[MODEL_MAPPING_LABEL]),
+      cooldown_rules: cooldownRowsFromLabel(upstream.labels?.[COOLDOWN_RULES_LABEL]),
     })
     setOpen(true)
   }
@@ -283,7 +286,7 @@ export default function PlatformUpstreams() {
               priority: values.priority,
               weight: values.weight,
               status: values.status,
-              labels: parseLabels(values.labels),
+              labels: labelsFromForm(values),
               capacity: {
                 max_concurrency: values.max_concurrency || 0,
                 capacity_percent: values.capacity_percent ?? 100,
@@ -385,6 +388,115 @@ export default function PlatformUpstreams() {
               />
             </Form.Item>
           ) : null}
+          <Divider orientation="left" plain>
+            {t('platformUpstreams.form.mappingTitle', '模型映射（可选）')}
+          </Divider>
+          <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
+            {t(
+              'platformUpstreams.form.mappingHint',
+              '把下游请求的模型名改写为该上游实际支持的模型名；不填表示原样透传。',
+            )}
+          </Typography.Paragraph>
+          <Form.List name="model_mapping">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map((field) => (
+                  <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
+                    <Form.Item
+                      name={[field.name, 'from']}
+                      noStyle
+                      rules={[{ required: true, message: t('platformUpstreams.form.mappingFromRequired', '请填写请求模型') }]}
+                    >
+                      <Input
+                        style={{ width: 220 }}
+                        placeholder={t('platformUpstreams.form.mappingFrom', '请求模型')}
+                      />
+                    </Form.Item>
+                    <span>→</span>
+                    <Form.Item
+                      name={[field.name, 'to']}
+                      noStyle
+                      rules={[{ required: true, message: t('platformUpstreams.form.mappingToRequired', '请填写上游模型') }]}
+                    >
+                      <Input
+                        style={{ width: 220 }}
+                        placeholder={t('platformUpstreams.form.mappingTo', '上游实际模型')}
+                      />
+                    </Form.Item>
+                    <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
+                  </Space>
+                ))}
+                <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()}>
+                  {t('platformUpstreams.form.mappingAdd', '添加映射')}
+                </Button>
+              </>
+            )}
+          </Form.List>
+
+          <Divider orientation="left" plain style={{ marginTop: 24 }}>
+            {t('platformUpstreams.form.cooldownTitle', '错误冷却规则（可选）')}
+          </Divider>
+          <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
+            {t(
+              'platformUpstreams.form.cooldownHint',
+              '命中的错误会让该上游临时退出调度，冷却期内新请求自动避开。关键词留空表示只匹配状态码。',
+            )}
+          </Typography.Paragraph>
+          <Form.List name="cooldown_rules">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map((field) => (
+                  <Space key={field.key} align="baseline" wrap style={{ display: 'flex', marginBottom: 8 }}>
+                    <Form.Item
+                      name={[field.name, 'status']}
+                      noStyle
+                      rules={[{ required: true, message: t('platformUpstreams.form.cooldownStatusRequired', '请填写状态码') }]}
+                    >
+                      <InputNumber
+                        min={100}
+                        max={599}
+                        precision={0}
+                        style={{ width: 110 }}
+                        placeholder={t('platformUpstreams.form.cooldownStatus', '状态码')}
+                      />
+                    </Form.Item>
+                    <Form.Item name={[field.name, 'keywords']} noStyle>
+                      <Input
+                        style={{ width: 260 }}
+                        placeholder={t('platformUpstreams.form.cooldownKeywords', '关键词（逗号分隔，可空）')}
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      name={[field.name, 'cooldown_seconds']}
+                      noStyle
+                      rules={[{ required: true, message: t('platformUpstreams.form.cooldownSecondsRequired', '请填写冷却秒数') }]}
+                    >
+                      <InputNumber
+                        min={1}
+                        max={86400}
+                        precision={0}
+                        style={{ width: 140 }}
+                        placeholder={t('platformUpstreams.form.cooldownSeconds', '冷却秒数')}
+                      />
+                    </Form.Item>
+                    <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
+                  </Space>
+                ))}
+                <Button
+                  type="dashed"
+                  block
+                  icon={<PlusOutlined />}
+                  onClick={() => add({ status: 429, keywords: '', cooldown_seconds: 300 })}
+                >
+                  {t('platformUpstreams.form.cooldownAdd', '添加规则')}
+                </Button>
+              </>
+            )}
+          </Form.List>
+
+          <Divider orientation="left" plain style={{ marginTop: 24 }}>
+            {t('platformUpstreams.form.advanced', '其他')}
+          </Divider>
           <Form.Item name="labels" label={t('platformUpstreams.form.labels', '标签（key=value，逗号分隔）')}>
             <Input placeholder="region=cn, lane=primary" />
           </Form.Item>
