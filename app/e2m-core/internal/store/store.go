@@ -24,6 +24,10 @@ var ErrInvalid = errors.New("store: invalid input")
 // for which every compatible platform upstream is unavailable or excluded.
 var ErrNoSupply = errors.New("store: no platform supply available")
 
+// ErrRateLimited reports that a per-user platform throttle (concurrency or
+// requests-per-minute) rejected the reservation.
+var ErrRateLimited = errors.New("store: user platform rate limit exceeded")
+
 // ErrLastEnabledAdmin protects the control plane from losing its final usable
 // administrator account.
 var ErrLastEnabledAdmin = errors.New("store: cannot disable or demote the last enabled admin")
@@ -371,6 +375,10 @@ type Store interface {
 	DisableRedeemCode(ctx context.Context, id string) (contracts.RedeemCode, error)
 	DeleteUnusedRedeemCode(ctx context.Context, id string) error
 	RedeemBalanceCode(ctx context.Context, codeHash string, userID int64, now time.Time) (contracts.RedeemCode, contracts.Wallet, error)
+	// ConsumeInvitationCode atomically marks an unused invitation code as used
+	// by the newly registered user. Non-invitation or non-unused codes return
+	// ErrConflict so a concurrently shared code admits exactly one account.
+	ConsumeInvitationCode(ctx context.Context, codeHash string, userID int64) (contracts.RedeemCode, error)
 	// ConfirmRechargePayment atomically records the verified provider event,
 	// transitions PENDING -> COMPLETED and credits the wallet with a balanced
 	// double-entry journal. Duplicate provider events or already completed orders

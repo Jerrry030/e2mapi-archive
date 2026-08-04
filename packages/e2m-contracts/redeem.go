@@ -1,6 +1,20 @@
 package contracts
 
-import "time"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+	"time"
+)
+
+// HashRedeemCode is the canonical plaintext-to-hash mapping shared by every
+// surface that verifies a code (redeem endpoint, registration invitation
+// gate). Input is normalized to trimmed uppercase before hashing.
+func HashRedeemCode(plaintext string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(plaintext))
+	sum := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(sum[:])
+}
 
 // RedeemCodeType enumerates what a code grants. Balance codes credit the
 // platform wallet; invitation codes gate self-serve registration.

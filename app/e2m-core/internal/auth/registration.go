@@ -18,6 +18,8 @@ import (
 var (
 	ErrRegistrationDisabled        = errors.New("auth: registration disabled")
 	ErrEmailSuffixNotAllowed       = errors.New("auth: email suffix not allowed")
+	ErrInvitationRequired          = errors.New("auth: invitation code required")
+	ErrInvitationCodeInvalid       = errors.New("auth: invitation code invalid")
 	ErrTurnstileRequired           = errors.New("auth: turnstile token required")
 	ErrTurnstileVerificationFailed = errors.New("auth: turnstile verification failed")
 )
@@ -28,6 +30,7 @@ var (
 type RegistrationConfig struct {
 	Enabled                bool
 	EmailSuffixWhitelist   []string
+	InvitationRequired     bool
 	TurnstileEnabled       bool
 	TurnstileSiteKey       string
 	TurnstileSecretKey     string
@@ -122,6 +125,7 @@ func (s *Service) PublicConfig() contracts.AuthPublicConfig {
 		RegistrationEnabled:              cfg.Enabled,
 		RegistrationDefaultRole:          contracts.UserRoleOwner,
 		RegistrationEmailSuffixWhitelist: suffixes,
+		InvitationRequired:               cfg.InvitationRequired,
 		TurnstileEnabled:                 cfg.TurnstileEnabled,
 		TurnstileSiteKey:                 cfg.TurnstileSiteKey,
 	}
@@ -162,6 +166,24 @@ func (s *Service) RegisterOwner(ctx context.Context, req contracts.AuthRegisterR
 		}
 	}
 
+	invitationHash := ""
+	if cfg.InvitationRequired {
+		code := strings.TrimSpace(req.InvitationCode)
+		if code == "" {
+			return RegistrationResult{}, ErrInvitationRequired
+		}
+		invitationHash = contracts.HashRedeemCode(code)
+		// Fail early so an invalid code never creates an account. The
+		// authoritative consumption below still guards the race where two
+		// registrations present the same code concurrently.
+		existing, lookupErr := s.store.GetRedeemCodeByHash(ctx, invitationHash)
+		if lookupErr != nil || existing.Type != contracts.RedeemCodeInvitation ||
+			existing.Status != contracts.RedeemCodeUnused ||
+			existing.ExpiresAt != nil && !existing.ExpiresAt.After(time.Now().UTC()) {
+			return RegistrationResult{}, ErrInvitationCodeInvalid
+		}
+	}
+
 	if _, err := s.store.GetUserByEmail(ctx, email); err == nil {
 		return RegistrationResult{}, store.ErrDuplicate
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -171,6 +193,15 @@ func (s *Service) RegisterOwner(ctx context.Context, req contracts.AuthRegisterR
 	user, err := s.CreateUser(ctx, email, req.Password, strings.TrimSpace(req.DisplayName), []contracts.UserRole{contracts.UserRoleOwner})
 	if err != nil {
 		return RegistrationResult{}, err
+	}
+	if invitationHash != "" {
+		if _, consumeErr := s.store.ConsumeInvitationCode(ctx, invitationHash, user.ID); consumeErr != nil {
+			// The code was stolen between the precheck and consumption. The
+			// account must not stay usable without a valid invitation.
+			user.Enabled = false
+			_, _ = s.store.UpdateUser(ctx, user)
+			return RegistrationResult{}, ErrInvitationCodeInvalid
+		}
 	}
 	token, expiresAt, err := s.issueSession(ctx, user)
 	if err != nil {
@@ -183,6 +214,7 @@ func ParseRegistrationConfigFromEnv(lookup func(string) string) RegistrationConf
 	return RegistrationConfig{
 		Enabled:                parseBool(lookup("E2M_AUTH_REGISTRATION_ENABLED")),
 		EmailSuffixWhitelist:   splitSuffixList(lookup("E2M_AUTH_REGISTRATION_EMAIL_SUFFIXES")),
+		InvitationRequired:     parseBool(lookup("E2M_AUTH_INVITATION_REQUIRED")),
 		TurnstileEnabled:       parseBool(lookup("E2M_AUTH_TURNSTILE_ENABLED")),
 		TurnstileSiteKey:       strings.TrimSpace(lookup("E2M_AUTH_TURNSTILE_SITE_KEY")),
 		TurnstileSecretKey:     strings.TrimSpace(lookup("E2M_AUTH_TURNSTILE_SECRET_KEY")),
@@ -194,6 +226,7 @@ func SystemSettingsFromRegistrationConfig(cfg RegistrationConfig) contracts.Auth
 	return contracts.AuthSystemSettings{
 		RegistrationEnabled:              cfg.Enabled,
 		RegistrationEmailSuffixWhitelist: normalizeEmailSuffixes(cfg.EmailSuffixWhitelist),
+		InvitationRequired:               cfg.InvitationRequired,
 		TurnstileEnabled:                 cfg.TurnstileEnabled,
 		TurnstileSiteKey:                 strings.TrimSpace(cfg.TurnstileSiteKey),
 		TurnstileSecretConfigured:        strings.TrimSpace(cfg.TurnstileSecretKey) != "",
@@ -205,6 +238,7 @@ func RegistrationConfigFromSystemSettings(settings contracts.AuthSystemSettings,
 	return RegistrationConfig{
 		Enabled:                settings.RegistrationEnabled,
 		EmailSuffixWhitelist:   normalizeEmailSuffixes(settings.RegistrationEmailSuffixWhitelist),
+		InvitationRequired:     settings.InvitationRequired,
 		TurnstileEnabled:       settings.TurnstileEnabled,
 		TurnstileSiteKey:       strings.TrimSpace(settings.TurnstileSiteKey),
 		TurnstileSecretKey:     strings.TrimSpace(settings.TurnstileSecretKey),

@@ -613,7 +613,8 @@ func (s *PostgresStore) ReserveSupplyRequest(ctx context.Context, tokenHash, req
 		return contracts.SupplyReservationResult{}, ErrNotFound
 	}
 	var userEligible bool
-	if err := tx.QueryRow(ctx, `SELECT enabled AND ('client'=ANY(roles) OR 'admin'=ANY(roles)) FROM users WHERE id=$1`, key.UserID).Scan(&userEligible); err != nil {
+	var platformConcurrency, platformRPM int
+	if err := tx.QueryRow(ctx, `SELECT enabled AND ('client'=ANY(roles) OR 'admin'=ANY(roles)), platform_concurrency, platform_rpm FROM users WHERE id=$1`, key.UserID).Scan(&userEligible, &platformConcurrency, &platformRPM); err != nil {
 		return contracts.SupplyReservationResult{}, mapNotFound(err)
 	}
 	if !userEligible {
@@ -636,6 +637,28 @@ func (s *PostgresStore) ReserveSupplyRequest(ctx context.Context, tokenHash, req
 		return contracts.SupplyReservationResult{Key: key, Candidate: candidate, Wallet: wallet, Reservation: reservation, Usage: usage}, nil
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return contracts.SupplyReservationResult{}, err
+	}
+	// Per-user platform throttles run after the idempotent-replay branch so a
+	// retried request never counts against itself.
+	if platformConcurrency > 0 {
+		var active int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM wallet_reservations WHERE user_id=$1 AND status=$2`,
+			key.UserID, string(contracts.WalletReservationActive)).Scan(&active); err != nil {
+			return contracts.SupplyReservationResult{}, err
+		}
+		if active >= platformConcurrency {
+			return contracts.SupplyReservationResult{}, ErrRateLimited
+		}
+	}
+	if platformRPM > 0 {
+		var recent int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM supply_usage_records WHERE user_id=$1 AND created_at >= statement_timestamp() - interval '1 minute'`,
+			key.UserID).Scan(&recent); err != nil {
+			return contracts.SupplyReservationResult{}, err
+		}
+		if recent >= platformRPM {
+			return contracts.SupplyReservationResult{}, ErrRateLimited
+		}
 	}
 	excluded := make([]string, 0, len(excludedChannelIDs))
 	for _, channelID := range excludedChannelIDs {

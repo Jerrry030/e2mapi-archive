@@ -302,6 +302,7 @@ func (s *Server) handleUpdateAuthSystemSettings(w http.ResponseWriter, r *http.R
 	settings := contracts.AuthSystemSettings{
 		RegistrationEnabled:              input.RegistrationEnabled,
 		RegistrationEmailSuffixWhitelist: auth.NormalizeEmailSuffixes(input.RegistrationEmailSuffixWhitelist),
+		InvitationRequired:               input.InvitationRequired,
 		TurnstileEnabled:                 input.TurnstileEnabled,
 		TurnstileSiteKey:                 strings.TrimSpace(input.TurnstileSiteKey),
 		TurnstileSecretKey:               secret,
@@ -350,6 +351,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "registration_disabled", "registration is disabled")
 		case errors.Is(err, auth.ErrEmailSuffixNotAllowed):
 			writeError(w, http.StatusBadRequest, "email_suffix_not_allowed", "email suffix is not allowed")
+		case errors.Is(err, auth.ErrInvitationRequired):
+			writeError(w, http.StatusBadRequest, "invitation_required", "an invitation code is required")
+		case errors.Is(err, auth.ErrInvitationCodeInvalid):
+			writeError(w, http.StatusBadRequest, "invitation_code_invalid", "the invitation code is invalid or already used")
 		case errors.Is(err, auth.ErrTurnstileRequired):
 			writeError(w, http.StatusBadRequest, "turnstile_required", "turnstile token is required")
 		case errors.Is(err, auth.ErrTurnstileVerificationFailed):

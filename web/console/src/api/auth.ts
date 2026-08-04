@@ -12,6 +12,8 @@ export interface AuthUser {
   display_name?: string
   roles: UserRole[]
   enabled: boolean
+  platform_concurrency?: number
+  platform_rpm?: number
   deactivation_status?: UserDeactivationStatus
   deactivation_error_code?: string
   deactivation_requested_at?: string | null

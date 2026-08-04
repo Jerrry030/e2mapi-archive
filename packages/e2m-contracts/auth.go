@@ -39,11 +39,16 @@ func (s UserDeactivationStatus) InProgress() bool {
 
 // User is a console login. PasswordHash is bcrypt and never serialized.
 type User struct {
-	ID                      int64                  `json:"id"`
-	Email                   string                 `json:"email"`
-	DisplayName             string                 `json:"display_name,omitempty"`
-	PasswordHash            string                 `json:"-"`
-	Roles                   []UserRole             `json:"roles"`
+	ID           int64      `json:"id"`
+	Email        string     `json:"email"`
+	DisplayName  string     `json:"display_name,omitempty"`
+	PasswordHash string     `json:"-"`
+	Roles        []UserRole `json:"roles"`
+	// PlatformConcurrency caps the user's concurrently reserved platform
+	// requests; PlatformRPM caps reservations per rolling minute. Zero means
+	// unlimited. Both apply to the E2M platform data plane only.
+	PlatformConcurrency     int                    `json:"platform_concurrency,omitempty"`
+	PlatformRPM             int                    `json:"platform_rpm,omitempty"`
 	Enabled                 bool                   `json:"enabled"`
 	DeactivationStatus      UserDeactivationStatus `json:"deactivation_status"`
 	DeactivationErrorCode   string                 `json:"deactivation_error_code,omitempty"`
@@ -63,6 +68,9 @@ type UpdateUserRequest struct {
 	Roles             []UserRole `json:"roles"`
 	Enabled           bool       `json:"enabled"`
 	ExpectedUpdatedAt time.Time  `json:"expected_updated_at"`
+	// Nil keeps the current limit; zero clears it (unlimited).
+	PlatformConcurrency *int `json:"platform_concurrency,omitempty"`
+	PlatformRPM         *int `json:"platform_rpm,omitempty"`
 }
 
 // ResetUserPasswordRequest replaces a user's password and revokes all of that
@@ -86,6 +94,7 @@ type AuthPublicConfig struct {
 	RegistrationEnabled              bool     `json:"registration_enabled"`
 	RegistrationDefaultRole          UserRole `json:"registration_default_role"`
 	RegistrationEmailSuffixWhitelist []string `json:"registration_email_suffix_whitelist"`
+	InvitationRequired               bool     `json:"invitation_required"`
 	TurnstileEnabled                 bool     `json:"turnstile_enabled"`
 	TurnstileSiteKey                 string   `json:"turnstile_site_key"`
 }
@@ -98,6 +107,7 @@ type AuthRegisterRequest struct {
 	Password       string `json:"password"`
 	DisplayName    string `json:"display_name,omitempty"`
 	TurnstileToken string `json:"turnstile_token,omitempty"`
+	InvitationCode string `json:"invitation_code,omitempty"`
 }
 
 // AuthRegisterResponse mirrors the login response.
@@ -113,6 +123,7 @@ type AuthRegisterResponse struct {
 type AuthSystemSettings struct {
 	RegistrationEnabled              bool      `json:"registration_enabled"`
 	RegistrationEmailSuffixWhitelist []string  `json:"registration_email_suffix_whitelist"`
+	InvitationRequired               bool      `json:"invitation_required"`
 	TurnstileEnabled                 bool      `json:"turnstile_enabled"`
 	TurnstileSiteKey                 string    `json:"turnstile_site_key"`
 	TurnstileSecretConfigured        bool      `json:"turnstile_secret_configured"`
@@ -126,6 +137,7 @@ type AuthSystemSettings struct {
 type UpdateAuthSystemSettingsRequest struct {
 	RegistrationEnabled              bool     `json:"registration_enabled"`
 	RegistrationEmailSuffixWhitelist []string `json:"registration_email_suffix_whitelist"`
+	InvitationRequired               bool     `json:"invitation_required"`
 	TurnstileEnabled                 bool     `json:"turnstile_enabled"`
 	TurnstileSiteKey                 string   `json:"turnstile_site_key"`
 	TurnstileSecretKey               *string  `json:"turnstile_secret_key,omitempty"`

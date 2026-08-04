@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"e2m.local/contracts"
+	"e2m.local/core/internal/auth"
 )
 
 func generateBalanceCodes(t *testing.T, handler http.Handler, adminToken string, count int, amount string) contracts.GenerateRedeemCodesResponse {
@@ -155,6 +156,54 @@ func TestRedeemRoutesFailClosedWithoutPaymentsFlag(t *testing.T) {
 		if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "feature_disabled") {
 			t.Fatalf("%s %s must fail closed, got %d %s", tc.method, tc.path, w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestRegistrationInvitationGate(t *testing.T) {
+	srv, _, authSvc := newTestServer(t)
+	handler := srv.Routes()
+	ctx := context.Background()
+
+	admin := createLoginUser(t, authSvc, "invite-admin@example.com", contracts.UserRolePlatformAdmin)
+	adminToken, _, _ := authSvc.Login(ctx, admin.Email, "password123")
+	authSvc.ConfigureRegistration(auth.RegistrationConfig{Enabled: true, InvitationRequired: true})
+
+	generate := do(t, handler, http.MethodPost, "/api/v1/admin/redeem-codes", adminToken, map[string]any{
+		"type": "invitation", "count": 1,
+	})
+	if generate.Code != http.StatusCreated {
+		t.Fatalf("generate invitation: %d %s", generate.Code, generate.Body.String())
+	}
+	var generated contracts.GenerateRedeemCodesResponse
+	if err := json.Unmarshal(generate.Body.Bytes(), &generated); err != nil || len(generated.Codes) != 1 {
+		t.Fatalf("decode invitation batch: %v", err)
+	}
+	invitation := generated.Codes[0]
+
+	if w := do(t, handler, http.MethodPost, "/api/v1/auth/register", "", map[string]any{
+		"email": "no-code@example.com", "password": "password123",
+	}); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invitation_required") {
+		t.Fatalf("registration without a code must fail, got %d %s", w.Code, w.Body.String())
+	}
+	if w := do(t, handler, http.MethodPost, "/api/v1/auth/register", "", map[string]any{
+		"email": "bad-code@example.com", "password": "password123", "invitation_code": "WRONG-CODE",
+	}); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invitation_code_invalid") {
+		t.Fatalf("registration with a wrong code must fail, got %d %s", w.Code, w.Body.String())
+	}
+	if w := do(t, handler, http.MethodPost, "/api/v1/auth/register", "", map[string]any{
+		"email": "invited@example.com", "password": "password123", "invitation_code": invitation,
+	}); w.Code != http.StatusOK && w.Code != http.StatusCreated {
+		t.Fatalf("registration with a valid code must succeed, got %d %s", w.Code, w.Body.String())
+	}
+	if w := do(t, handler, http.MethodPost, "/api/v1/auth/register", "", map[string]any{
+		"email": "second@example.com", "password": "password123", "invitation_code": invitation,
+	}); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invitation_code_invalid") {
+		t.Fatalf("a used invitation must not admit a second account, got %d %s", w.Code, w.Body.String())
+	}
+
+	config := do(t, handler, http.MethodGet, "/api/v1/auth/public-config", "", nil)
+	if config.Code != http.StatusOK || !strings.Contains(config.Body.String(), `"invitation_required":true`) {
+		t.Fatalf("public config must expose the invitation gate, got %d %s", config.Code, config.Body.String())
 	}
 }
 

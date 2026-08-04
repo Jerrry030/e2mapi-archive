@@ -129,14 +129,33 @@ func (s *Service) UpdateUser(ctx context.Context, actorUserID, targetUserID int6
 	if actorUserID == targetUserID && (!input.Enabled || !hasRole(roles, contracts.UserRoleAdmin)) {
 		return contracts.User{}, ErrSelfAdminLockout
 	}
+	current, err := s.store.GetUser(ctx, targetUserID)
+	if err != nil {
+		return contracts.User{}, err
+	}
+	platformConcurrency, platformRPM := current.PlatformConcurrency, current.PlatformRPM
+	if input.PlatformConcurrency != nil {
+		if *input.PlatformConcurrency < 0 || *input.PlatformConcurrency > 1_000_000 {
+			return contracts.User{}, fmt.Errorf("auth: platform_concurrency must be between 0 and 1000000")
+		}
+		platformConcurrency = *input.PlatformConcurrency
+	}
+	if input.PlatformRPM != nil {
+		if *input.PlatformRPM < 0 || *input.PlatformRPM > 1_000_000 {
+			return contracts.User{}, fmt.Errorf("auth: platform_rpm must be between 0 and 1000000")
+		}
+		platformRPM = *input.PlatformRPM
+	}
 
 	return s.store.UpdateUser(ctx, contracts.User{
-		ID:          targetUserID,
-		Email:       email,
-		DisplayName: strings.TrimSpace(input.DisplayName),
-		Roles:       roles,
-		Enabled:     input.Enabled,
-		UpdatedAt:   input.ExpectedUpdatedAt,
+		ID:                  targetUserID,
+		Email:               email,
+		DisplayName:         strings.TrimSpace(input.DisplayName),
+		Roles:               roles,
+		Enabled:             input.Enabled,
+		PlatformConcurrency: platformConcurrency,
+		PlatformRPM:         platformRPM,
+		UpdatedAt:           input.ExpectedUpdatedAt,
 	})
 }
 

@@ -5,6 +5,7 @@ import {
   Button,
   Form,
   Input,
+  InputNumber,
   Modal,
   Select,
   Space,
@@ -164,6 +165,8 @@ export default function Users() {
       roles: user.roles,
       enabled: user.enabled,
       expected_updated_at: user.updated_at ?? '',
+      platform_concurrency: user.platform_concurrency ?? 0,
+      platform_rpm: user.platform_rpm ?? 0,
     })
   }
 
@@ -401,6 +404,20 @@ export default function Users() {
               checkedChildren="启用"
               unCheckedChildren="停用"
             />
+          </Form.Item>
+          <Form.Item
+            name="platform_concurrency"
+            label="平台并发上限"
+            extra="同时进行中的平台请求数上限；0 表示不限制。"
+          >
+            <InputNumber min={0} max={1000000} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            name="platform_rpm"
+            label="平台每分钟请求上限"
+            extra="每分钟平台请求数上限（RPM）；0 表示不限制。"
+          >
+            <InputNumber min={0} max={1000000} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
       </Modal>

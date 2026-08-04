@@ -159,6 +159,33 @@ func (s *PostgresStore) DeleteUnusedRedeemCode(ctx context.Context, id string) e
 	return ErrConflict
 }
 
+func (s *PostgresStore) ConsumeInvitationCode(ctx context.Context, codeHash string, userID int64) (contracts.RedeemCode, error) {
+	if userID <= 0 || strings.TrimSpace(codeHash) == "" {
+		return contracts.RedeemCode{}, ErrInvalid
+	}
+	code, err := scanRedeemCode(s.pool.QueryRow(ctx, `UPDATE redeem_codes
+		SET status=$2, used_by=$3, used_at=statement_timestamp(), updated_at=statement_timestamp()
+		WHERE code_hash=$1 AND type=$4 AND status=$5
+		  AND (expires_at IS NULL OR expires_at > statement_timestamp())
+		RETURNING `+redeemCodeColumns,
+		codeHash, string(contracts.RedeemCodeUsed), userID,
+		string(contracts.RedeemCodeInvitation), string(contracts.RedeemCodeUnused)))
+	if err == nil {
+		return code, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return contracts.RedeemCode{}, err
+	}
+	var exists bool
+	if lookupErr := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM redeem_codes WHERE code_hash=$1)`, codeHash).Scan(&exists); lookupErr != nil {
+		return contracts.RedeemCode{}, lookupErr
+	}
+	if !exists {
+		return contracts.RedeemCode{}, ErrNotFound
+	}
+	return contracts.RedeemCode{}, ErrConflict
+}
+
 // RedeemBalanceCode consumes an unused balance code and credits the wallet in
 // one serializable transaction: the row lock on the code makes a concurrent
 // double redeem impossible, and the journal keeps the ledger balanced.

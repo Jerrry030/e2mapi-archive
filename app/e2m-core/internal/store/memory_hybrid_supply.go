@@ -538,8 +538,10 @@ func (s *MemoryStore) ReserveSupplyRequest(ctx context.Context, tokenHash, reque
 		return contracts.SupplyReservationResult{}, ErrNotFound
 	}
 	userEligible := false
+	var platformUser contracts.User
 	for _, user := range s.users {
 		if user.ID == key.UserID {
+			platformUser = user
 			userEligible = user.Enabled && (userHasRole(user.Roles, contracts.UserRoleClient) || userHasRole(user.Roles, contracts.UserRoleAdmin))
 			break
 		}
@@ -557,6 +559,32 @@ func (s *MemoryStore) ReserveSupplyRequest(ctx context.Context, tokenHash, reque
 			return contracts.SupplyReservationResult{Key: copyVirtualKey(key), Candidate: candidate, Wallet: s.wallets[walletMapKey(key.UserID, currency)], Reservation: reservation, Usage: usage}, nil
 		}
 	}
+	// Per-user platform throttles run after the idempotent-replay branch so a
+	// retried request never counts against itself.
+	if platformUser.PlatformConcurrency > 0 {
+		active := 0
+		for _, reservation := range s.walletReservations {
+			if reservation.UserID == key.UserID && reservation.Status == contracts.WalletReservationActive {
+				active++
+			}
+		}
+		if active >= platformUser.PlatformConcurrency {
+			return contracts.SupplyReservationResult{}, ErrRateLimited
+		}
+	}
+	if platformUser.PlatformRPM > 0 {
+		minuteAgo := s.now().Add(-time.Minute)
+		recent := 0
+		for _, usage := range s.supplyUsage {
+			if usage.UserID == key.UserID && !usage.CreatedAt.Before(minuteAgo) {
+				recent++
+			}
+		}
+		if recent >= platformUser.PlatformRPM {
+			return contracts.SupplyReservationResult{}, ErrRateLimited
+		}
+	}
+
 	candidates := s.listSupplyCandidatesLocked(key.ResourceClass, model)
 	excluded := make(map[string]bool, len(excludedChannelIDs))
 	for _, id := range excludedChannelIDs {

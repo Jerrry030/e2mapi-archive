@@ -162,6 +162,39 @@ func (s *MemoryStore) DeleteUnusedRedeemCode(ctx context.Context, id string) err
 	return ErrNotFound
 }
 
+func (s *MemoryStore) ConsumeInvitationCode(ctx context.Context, codeHash string, userID int64) (contracts.RedeemCode, error) {
+	if err := ctx.Err(); err != nil {
+		return contracts.RedeemCode{}, err
+	}
+	if userID <= 0 || strings.TrimSpace(codeHash) == "" {
+		return contracts.RedeemCode{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.redeemCodes {
+		code := &s.redeemCodes[i]
+		if code.CodeHash != codeHash {
+			continue
+		}
+		if code.Type != contracts.RedeemCodeInvitation || code.Status != contracts.RedeemCodeUnused {
+			return contracts.RedeemCode{}, ErrConflict
+		}
+		now := s.now()
+		if code.ExpiresAt != nil && !code.ExpiresAt.After(now) {
+			code.Status = contracts.RedeemCodeExpired
+			code.UpdatedAt = now
+			return contracts.RedeemCode{}, ErrConflict
+		}
+		usedAt := now
+		code.Status = contracts.RedeemCodeUsed
+		code.UsedBy = userID
+		code.UsedAt = &usedAt
+		code.UpdatedAt = now
+		return *code, nil
+	}
+	return contracts.RedeemCode{}, ErrNotFound
+}
+
 // RedeemBalanceCode atomically consumes an unused balance code and credits the
 // user's wallet with a balanced redeem journal. An expired code is marked
 // expired instead of consumed; every non-unused state returns ErrConflict so a

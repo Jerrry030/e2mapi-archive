@@ -8,6 +8,7 @@ export interface AuthPublicConfig {
   registration_enabled: boolean
   registration_default_role: import('./auth').UserRole
   registration_email_suffix_whitelist: string[]
+  invitation_required?: boolean
   turnstile_enabled: boolean
   turnstile_site_key: string
 }
@@ -17,6 +18,7 @@ export interface RegisterInput {
   password: string
   display_name?: string
   turnstile_token?: string
+  invitation_code?: string
 }
 
 export interface AuthResponse {
@@ -28,6 +30,7 @@ export interface AuthResponse {
 export interface AuthSystemSettings {
   registration_enabled: boolean
   registration_email_suffix_whitelist: string[]
+  invitation_required?: boolean
   turnstile_enabled: boolean
   turnstile_site_key: string
   turnstile_secret_configured: boolean
@@ -37,6 +40,7 @@ export interface AuthSystemSettings {
 export interface UpdateAuthSystemSettingsInput {
   registration_enabled: boolean
   registration_email_suffix_whitelist: string[]
+  invitation_required?: boolean
   turnstile_enabled: boolean
   turnstile_site_key: string
   turnstile_secret_key?: string

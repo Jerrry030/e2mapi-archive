@@ -1538,6 +1538,7 @@ func (s *PostgresStore) DeleteNotificationRoute(ctx context.Context, id string) 
 }
 
 const userCols = `id, email, display_name, password_hash, roles, enabled,
+	platform_concurrency, platform_rpm,
 	deactivation_status, deactivation_error_code, deactivation_requested_at, deactivation_completed_at,
 	created_at, updated_at`
 
@@ -1547,6 +1548,7 @@ func scanUser(row interface{ Scan(dest ...any) error }) (contracts.User, error) 
 	var deactivationStatus string
 	if err := row.Scan(
 		&u.ID, &u.Email, &u.DisplayName, &u.PasswordHash, &roles, &u.Enabled,
+		&u.PlatformConcurrency, &u.PlatformRPM,
 		&deactivationStatus, &u.DeactivationErrorCode, &u.DeactivationRequestedAt, &u.DeactivationCompletedAt,
 		&u.CreatedAt, &u.UpdatedAt,
 	); err != nil {
@@ -1565,15 +1567,15 @@ func (s *PostgresStore) CreateUser(ctx context.Context, input contracts.User) (c
 	var err error
 	if u.ID == 0 {
 		err = s.pool.QueryRow(ctx,
-			`INSERT INTO users (email, display_name, password_hash, roles, enabled, created_at, updated_at)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7)
+			`INSERT INTO users (email, display_name, password_hash, roles, enabled, platform_concurrency, platform_rpm, created_at, updated_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 			 RETURNING id`,
-			u.Email, u.DisplayName, u.PasswordHash, userRolesToStrings(u.Roles), u.Enabled, u.CreatedAt, u.UpdatedAt).Scan(&u.ID)
+			u.Email, u.DisplayName, u.PasswordHash, userRolesToStrings(u.Roles), u.Enabled, u.PlatformConcurrency, u.PlatformRPM, u.CreatedAt, u.UpdatedAt).Scan(&u.ID)
 	} else {
 		_, err = s.pool.Exec(ctx,
-			`INSERT INTO users (id, email, display_name, password_hash, roles, enabled, created_at, updated_at)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-			u.ID, u.Email, u.DisplayName, u.PasswordHash, userRolesToStrings(u.Roles), u.Enabled, u.CreatedAt, u.UpdatedAt)
+			`INSERT INTO users (id, email, display_name, password_hash, roles, enabled, platform_concurrency, platform_rpm, created_at, updated_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			u.ID, u.Email, u.DisplayName, u.PasswordHash, userRolesToStrings(u.Roles), u.Enabled, u.PlatformConcurrency, u.PlatformRPM, u.CreatedAt, u.UpdatedAt)
 		if err == nil {
 			_, err = s.pool.Exec(ctx,
 				`SELECT setval(pg_get_serial_sequence('users','id'), GREATEST((SELECT COALESCE(MAX(id), 1) FROM users), 1), true)`)
@@ -1714,6 +1716,7 @@ func (s *PostgresStore) UpdateUser(ctx context.Context, input contracts.User) (c
 	updated, err := scanUser(tx.QueryRow(ctx,
 		`UPDATE users
 		 SET email=$2, display_name=$3, roles=$4, enabled=$5,
+		     platform_concurrency=$11, platform_rpm=$12,
 		     deactivation_status=$6, deactivation_error_code=$7,
 		     deactivation_requested_at=CASE WHEN $10 THEN statement_timestamp() ELSE $8 END,
 		     deactivation_completed_at=$9,
@@ -1722,7 +1725,7 @@ func (s *PostgresStore) UpdateUser(ctx context.Context, input contracts.User) (c
 		 RETURNING `+userCols,
 		input.ID, input.Email, input.DisplayName, userRolesToStrings(input.Roles), input.Enabled,
 		string(deactivationStatus), deactivationErrorCode, deactivationRequestedAt, deactivationCompletedAt,
-		deactivationRequestedAtNow))
+		deactivationRequestedAtNow, input.PlatformConcurrency, input.PlatformRPM))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return contracts.User{}, ErrDuplicate

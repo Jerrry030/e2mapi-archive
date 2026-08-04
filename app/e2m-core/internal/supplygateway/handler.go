@@ -468,6 +468,8 @@ func (h *Handler) writeStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusUnauthorized, "invalid_api_key", "virtual key or requested model is unavailable")
+	case errors.Is(err, store.ErrRateLimited):
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "per-user concurrency or request-rate limit exceeded")
 	case errors.Is(err, store.ErrConflict):
 		writeError(w, http.StatusPaymentRequired, "insufficient_quota", "wallet, budget, capacity, or price policy rejected the request")
 	case errors.Is(err, store.ErrInvalid):

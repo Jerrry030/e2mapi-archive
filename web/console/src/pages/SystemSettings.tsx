@@ -29,6 +29,7 @@ import {
 interface FormValues {
   registration_enabled?: boolean
   registration_email_suffixes?: string
+  invitation_required?: boolean
   turnstile_enabled?: boolean
   turnstile_site_key?: string
   turnstile_secret_key?: string
@@ -70,6 +71,7 @@ export default function SystemSettings() {
       registration_email_suffixes: suffixes(settings.data.registration_email_suffix_whitelist).join(
         ', ',
       ),
+      invitation_required: settings.data.invitation_required,
       turnstile_enabled: settings.data.turnstile_enabled,
       turnstile_site_key: settings.data.turnstile_site_key,
       turnstile_secret_key: '',
@@ -116,6 +118,7 @@ export default function SystemSettings() {
     const body: UpdateAuthSystemSettingsInput = {
       registration_enabled: !!values.registration_enabled,
       registration_email_suffix_whitelist: splitSuffixes(values.registration_email_suffixes),
+      invitation_required: !!values.invitation_required,
       turnstile_enabled: !!values.turnstile_enabled,
       turnstile_site_key: values.turnstile_site_key?.trim() ?? '',
       clear_turnstile_secret: !!values.clear_turnstile_secret,
@@ -158,6 +161,12 @@ export default function SystemSettings() {
                 placeholder="@example.com, *.edu.cn"
                 fieldProps={{ rows: 3 }}
                 extra="留空表示不限制；支持 @example.com、example.com、*.edu.cn。只影响公开注册，不影响已有用户登录。"
+              />
+              <ProFormSwitch
+                name="invitation_required"
+                label="注册需要邀请码"
+                fieldProps={{ checkedChildren: '开启', unCheckedChildren: '关闭' }}
+                extra="开启后，公开注册必须提交一张未使用的邀请码（在「兑换码管理」生成邀请类型的码）。"
               />
 
               <Typography.Title level={5} style={{ marginTop: 8 }}>

@@ -1592,6 +1592,8 @@ func (s *MemoryStore) UpdateUser(ctx context.Context, input contracts.User) (con
 		}
 	}
 	updated := current
+	updated.PlatformConcurrency = input.PlatformConcurrency
+	updated.PlatformRPM = input.PlatformRPM
 	updated.Email = input.Email
 	updated.DisplayName = input.DisplayName
 	updated.Roles = append([]contracts.UserRole(nil), input.Roles...)

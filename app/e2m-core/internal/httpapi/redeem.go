@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -33,9 +32,7 @@ func newRedeemCodePlaintext() (string, error) {
 }
 
 func redeemCodeHash(plaintext string) string {
-	normalized := strings.ToUpper(strings.TrimSpace(plaintext))
-	sum := sha256.Sum256([]byte(normalized))
-	return hex.EncodeToString(sum[:])
+	return contracts.HashRedeemCode(plaintext)
 }
 
 func redeemCodePrefix(plaintext string) string {

@@ -79,7 +79,12 @@ export default function Register() {
     publicConfig?.turnstile_enabled && !publicConfig.turnstile_site_key,
   )
 
-  const onFinish = async (values: { email: string; password: string; display_name?: string }) => {
+  const onFinish = async (values: {
+    email: string
+    password: string
+    display_name?: string
+    invitation_code?: string
+  }) => {
     if (turnstileRequired && !turnstileToken) {
       setError('请先完成人机验证')
       return
@@ -92,6 +97,7 @@ export default function Register() {
         password: values.password,
         display_name: values.display_name,
         turnstile_token: turnstileToken,
+        invitation_code: values.invitation_code?.trim() || undefined,
       })
       setSession(res.token, res.user)
       window.location.assign('/onboarding')
@@ -171,6 +177,15 @@ export default function Register() {
             >
               <Input.Password prefix={<LockOutlined />} placeholder="至少 8 个字符" size="large" />
             </Form.Item>
+            {publicConfig?.invitation_required ? (
+              <Form.Item
+                name="invitation_code"
+                label="邀请码"
+                rules={[{ required: true, message: '请输入邀请码' }]}
+              >
+                <Input placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX" size="large" />
+              </Form.Item>
+            ) : null}
             {publicConfig?.registration_email_suffix_whitelist?.length ? (
               <Typography.Paragraph type="secondary" style={{ marginTop: -4, fontSize: 12 }}>
                 允许注册邮箱后缀：{publicConfig.registration_email_suffix_whitelist.join(', ')}

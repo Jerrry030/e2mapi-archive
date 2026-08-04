@@ -239,6 +239,9 @@ export interface UpdateUserInput {
   roles: import('./auth').UserRole[]
   enabled: boolean
   expected_updated_at: string
+  /** Platform data-plane throttles; 0 = unlimited, omitted = unchanged. */
+  platform_concurrency?: number
+  platform_rpm?: number
 }
 
 export const endpoints = {

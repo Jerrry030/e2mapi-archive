@@ -140,6 +140,47 @@ func TestMemorySupplyReserveSettleAndReleaseAreBalanced(t *testing.T) {
 	}
 }
 
+func TestMemoryReserveEnforcesUserPlatformLimits(t *testing.T) {
+	st, owner, _, _, plaintext := seedMemoryHybridSupply(t)
+	ctx := context.Background()
+	tokenHash := contracts.HashVirtualKey(plaintext)
+	setState := func(concurrency, rpm int) {
+		st.mu.Lock()
+		st.wallets[walletMapKey(owner.ID, "CNY")] = contracts.Wallet{UserID: owner.ID, Currency: "CNY", AvailableMicros: 500_000, Version: 1, UpdatedAt: st.now()}
+		for i := range st.users {
+			if st.users[i].ID == owner.ID {
+				st.users[i].PlatformConcurrency = concurrency
+				st.users[i].PlatformRPM = rpm
+			}
+		}
+		st.mu.Unlock()
+	}
+
+	setState(1, 0)
+	first, err := st.ReserveSupplyRequest(ctx, tokenHash, "limit-request-1", "gpt-test", "CNY", nil)
+	if err != nil {
+		t.Fatalf("first reservation must pass: %v", err)
+	}
+	if _, err := st.ReserveSupplyRequest(ctx, tokenHash, "limit-request-2", "gpt-test", "CNY", nil); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("second concurrent reservation must be rate limited, got %v", err)
+	}
+	// The idempotent replay of an active reservation never counts against the cap.
+	if _, err := st.ReserveSupplyRequest(ctx, tokenHash, "limit-request-1", "gpt-test", "CNY", nil); err != nil {
+		t.Fatalf("replay of the active reservation must pass: %v", err)
+	}
+	if _, err := st.SettleSupplyRequest(ctx, first.Reservation.ID, 100, 100); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+
+	setState(0, 2)
+	if _, err := st.ReserveSupplyRequest(ctx, tokenHash, "limit-request-3", "gpt-test", "CNY", nil); err != nil {
+		t.Fatalf("reservation under the RPM cap must pass: %v", err)
+	}
+	if _, err := st.ReserveSupplyRequest(ctx, tokenHash, "limit-request-4", "gpt-test", "CNY", nil); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("reservation over the RPM cap must be rate limited, got %v", err)
+	}
+}
+
 func TestMemoryDisabledUserCannotReserveWithExistingPlatformKey(t *testing.T) {
 	st, owner, _, _, plaintext := seedMemoryHybridSupply(t)
 	ctx := context.Background()
