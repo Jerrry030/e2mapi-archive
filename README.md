@@ -48,21 +48,48 @@ E2M 是面向站长的统一 AI 资源管理与分发平台。当前产品只保
 首期平台管理契约：
 
 ```text
-GET/POST     /api/v1/platform/groups
+GET/POST       /api/v1/platform/groups
 GET/PUT/DELETE /api/v1/platform/groups/{id}
-GET/POST     /api/v1/platform/upstreams
+GET/POST       /api/v1/platform/upstreams
 GET/PUT/DELETE /api/v1/platform/upstreams/{id}
-POST         /api/v1/platform/upstreams/{id}/test
-POST /api/v1/platform/keys
-POST /api/v1/platform/wallet-adjustments
-GET  /api/v1/platform/usage
-POST /v1/chat/completions
+POST           /api/v1/platform/upstreams/{id}/test
+GET/POST       /api/v1/platform/keys          # 别名 /api/v1/platform/api-keys
+GET/PUT/DELETE /api/v1/platform/keys/{id}
+GET            /api/v1/platform/keys/{id}/value
+GET            /api/v1/platform/wallet
+GET            /api/v1/platform/wallet/journals
+POST           /api/v1/platform/wallet-adjustments
+GET            /api/v1/platform/usage
+GET            /api/v1/platform/pricing/preview
+GET            /api/v1/platform/model-market
+POST           /v1/chat/completions
 ```
 
-控制台支持分组和 OpenAI-compatible 上游的创建、编辑、启停与安全退役，
-并可通过服务端 Vault 凭证测试连接、发现模型。上游下线与分组删除均保留
-历史账务和审计记录，不执行破坏性硬删除；有关联路由的分组由 Core 后台
-持续排空并完成退役。
+商业化契约（受 `E2M_ENABLE_PAYMENTS` 门禁，关闭时返回 `404 feature_disabled`）：
+
+```text
+GET/PUT        /api/v1/admin/payment/config
+GET/POST       /api/v1/admin/payment/providers
+PUT/DELETE     /api/v1/admin/payment/providers/{id}
+GET            /api/v1/admin/payment/orders
+GET            /api/v1/admin/payment/orders/{id}
+POST           /api/v1/admin/payment/orders/{id}/cancel
+POST           /api/v1/owner/hybrid-supply/recharge-orders
+POST           /api/v1/payment/webhooks/stripe/{providerId}
+GET/POST       /api/v1/payment/webhooks/easypay/{providerId}
+GET/POST       /api/v1/admin/redeem-codes
+POST           /api/v1/admin/redeem-codes/create-and-redeem
+POST           /api/v1/admin/redeem-codes/{id}/disable
+DELETE         /api/v1/admin/redeem-codes/{id}
+POST           /api/v1/redeem
+GET/PUT        /api/v1/admin/settings/commerce
+```
+
+控制台把分组与上游拆为「分组管理」「上游账号」两个管理员页面，支持创建、
+编辑、启停与安全退役，并可通过服务端 Vault 凭证测试连接、发现模型；上游的
+模型映射与错误冷却规则以表单方式配置。上游下线与分组删除均保留历史账务和
+审计记录，不执行破坏性硬删除；有关联路由的分组由 Core 后台持续排空并完成
+退役。
 
 “对下游保证成功交付”应落实为可测量的高成功率目标，而不是无条件承诺。系统可以通过健康筛选、同组重试和错误转移提高成功率，但无法在所有兼容上游均不可用、余额耗尽、模型不受支持或请求非法时伪造成功响应。
 
@@ -73,7 +100,17 @@ POST /v1/chat/completions
 - Connector 管理平台上游或承载平台请求；
 - 独立 Sub2API 服务、管理端口、数据库、Redis、用户或 Key；
 - 同一能力在 E2M 与其他平台之间的双写、镜像余额或二次 Key 交付；
-- 支付回调、供应商自动结算、内容审查、Cyber 风控和 MaiBot。
+- 供应商自动结算、应付与提现、内容审查、Cyber 风控和 MaiBot；
+- 订阅套餐与配额窗口、OAuth 订阅型上游账号、`/v1/messages` 协议桥（2026-08-04 决策）。
+
+平台商业化闭环（2026-08-04）已实现并默认关闭，由 `E2M_ENABLE_PAYMENTS` 统一门禁：
+
+- 自助充值：Stripe 与 EasyPay（易支付）下单、回调验签恰好一次入账、订单到期清扫与主动补单；
+- 兑换码：余额码与邀请码、批量生成、面向外部发卡系统的 `create-and-redeem` 幂等接口；
+- 注册邀请码门槛（系统设置开关，原子消费）；
+- 基准价目表定价（LiteLLM 格式）与分组售价倍率；客户可见的模型市场报价；
+- 用户级平台并发与 RPM 限流、平台钱包低余额提醒、平台 Key 有效期；
+- 统一设置模块：商务运行参数存库并热生效，环境变量降级为首启种子。
 
 ## 仓库结构
 
@@ -152,7 +189,11 @@ docker compose -f deployments/templates/compose/e2m-core-real-gateways.compose.y
 
 - [当前实现状态](docs/development/current-state.md)
 - [平台职责边界](docs/development/platform-boundaries.md)
+- [平台商业化执行计划](docs/development/platform-commerce-execution-plan.md)
+- [功能开关与运行参数](docs/development/feature-flags.md)
 - [Connector 开发与部署](docs/development/e2m-agent.md)
 - [工程化基线](docs/development/engineering.md)
 
-旧 roadmap、progress 和早期平台蓝图仅保留历史决策过程，不代表当前产品范围。
+旧 roadmap、progress 和早期平台蓝图仅保留历史决策过程，不代表当前产品范围。带
+「历史文档」或「该子系统当前未挂载」横幅的文档同理：其中的能力描述不等于当前
+可达能力。

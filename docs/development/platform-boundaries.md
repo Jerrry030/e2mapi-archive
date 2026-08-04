@@ -1,6 +1,6 @@
 # Platform Boundaries
 
-Updated: 2026-08-01
+Updated: 2026-08-04
 
 E2M is the sole customer-facing product and the sole owner of platform
 distribution data. Connector remains a narrowly scoped customer-owned-pool
@@ -23,6 +23,12 @@ absorbed into E2M-native code, but Sub2API is not a deployed subsystem.
 | Downstream unified wallet | Owns | No | Must not exist |
 | Platform metering and usage | Owns | No | Must not exist |
 | Platform scheduling/retry/forwarding | Owns | No | Must not exist |
+| Payment channels, orders, callbacks | Owns | No | Must not exist |
+| Redeem codes and invitation gate | Owns | No | Must not exist |
+| Base price table and group multiplier | Owns | No | Must not exist |
+| Customer model market | Owns | No | Must not exist |
+| Per-user concurrency/RPM limits | Owns and enforces | No | Must not exist |
+| Unified runtime settings | Owns | No | Must not exist |
 | Three-pool ratios | Not supported in V1 | Not supported | Must not exist |
 
 “E2M Core owns” describes the E2M product and trust boundary. Hot-path code may
@@ -154,9 +160,13 @@ code without tracking license obligations.
 ## Source and Data Compatibility
 
 The repository contains historical migrations, DTOs, stores, tests, and helper
-packages for supply, payment, Hybrid Supply, key delivery, intelligence, and
-quality work. They remain to avoid mixing this product correction with a
-destructive migration.
+packages for supply, Hybrid Supply, key delivery, intelligence, and quality
+work. They remain to avoid mixing this product correction with a destructive
+migration.
+
+Payment and redeem are no longer in that category: they became active
+capabilities on 2026-08-04, reachable through the current E2M API and console
+behind the `E2M_ENABLE_PAYMENTS` gate.
 
 A capability is active only when it is reachable through the current E2M API,
 current E2M console, Connector's five-task contract, or the minimal E2M Compose
@@ -169,7 +179,9 @@ flows without an explicit later decision.
 - no duplicate identity, key, balance, or usage lifecycle;
 - no Connector in the platform request path;
 - no separate Sub2API data plane or management plane;
-- no payment or supplier-finance workflow in this vertical slice;
+- no supplier-finance workflow (payable, settlement, withdrawal);
+- no subscription plans or quota windows, no OAuth subscription upstream
+  accounts, no `/v1/messages` protocol bridge (2026-08-04 decisions);
 - no upstream content/cyber review or MaiBot runtime;
 - no promise that error transfer can succeed without a healthy compatible
   upstream.

@@ -1,6 +1,6 @@
 # Current Implementation State
 
-Updated: 2026-08-01
+Updated: 2026-08-04
 
 This document defines the factual product and runtime baseline for the current
 E2M vertical slice. Older roadmap, progress, ADR, architecture, migration, and
@@ -121,18 +121,34 @@ The platform request enters E2M directly:
 1. authenticate the E2M API key;
 2. validate key state, current user enabled state and current `client`/`admin`
    role, wallet balance, group, and model access;
-3. select a healthy compatible upstream in the E2M group;
-4. forward the request while preserving compatible request and response
-   semantics, including SSE;
-5. retry or transfer only for transport errors, 408, 429, and 5xx; forward
+3. enforce the per-user platform concurrency and RPM limits inside the
+   reservation transaction (zero means unlimited, an idempotent replay is
+   exempt); exceeding either returns `429 rate_limited`;
+4. select a healthy compatible upstream in the E2M group, skipping channels
+   currently parked by an operator cooldown rule;
+5. rewrite the request body model when the selected channel declares a model
+   mapping, then forward while preserving compatible request and response
+   semantics, including SSE; usage snapshots keep the requested model;
+6. retry or transfer only for transport errors, 408, 429, and 5xx; forward
    deterministic 4xx rejections without broadcasting the request to another
-   channel;
-6. atomically record usage and apply the final charge/refund outcome in E2M.
+   channel; a failure matching the channel's cooldown rules parks that channel
+   for the configured duration;
+7. atomically record usage and apply the final charge/refund outcome in E2M.
+
+Model mapping and cooldown rules are configured per upstream in the console
+(structured form sections backed by the `e2m.model_mapping` and
+`e2m.error_cooldown_rules` channel labels). Cooldown state is in-process and
+clears on restart; durable circuit state remains the parked quality-circuit
+subsystem's responsibility.
 
 The downstream sees only E2M domains, E2M error contracts, E2M keys, and E2M
 usage. Real upstream credentials are encrypted and remain server-side.
 Customer group reads use a product-catalog DTO containing only group ID, name,
-description, economy/stable class, models, and status. Provider identity,
+description, an internal default resource class, models, and status. A group is
+a named, sellable pool: operators do not choose a resource class when creating
+one, and economy/stable is not a customer-facing product tier — that concept
+belongs to the deferred three-pool ratio work. The group sell-price multiplier
+is administrator-only and never appears in the customer view. Provider identity,
 region, operational labels, safety stock, and delivery-mode internals remain
 administrator-only. Every accepted gateway request receives an E2M-generated
 `X-E2M-Request-ID`, including deterministic upstream 4xx responses.
@@ -168,6 +184,54 @@ It writes the bootstrap-retrieved plaintext test key to
 `deployments/runtime/platform-forwarding/downstream.key`. It does not delete
 volumes, migrations, or historical data.
 
+## Platform Commerce
+
+Shipped 2026-08-04 (execution plan: `platform-commerce-execution-plan.md`).
+**The entire loop is closed by default.** With `E2M_ENABLE_PAYMENTS` unset,
+every path below fails closed with `404 feature_disabled` before
+authentication: `/api/v1/admin/payment/*`, `/api/v1/payment/webhooks/*`,
+`/api/v1/owner/hybrid-supply/recharge-orders`, `/api/v1/admin/redeem-codes/*`,
+and `/api/v1/redeem`. The console mirrors this with the
+`VITE_E2M_ENABLE_PAYMENTS` build flag.
+
+Active capabilities when the switch is on:
+
+- self-serve top-up through Stripe and EasyPay: hosted checkout, signature
+  verified callbacks with exactly-once wallet credit, and an expiry sweeper
+  that queries the provider before expiring an order so a missed callback
+  becomes a recovered credit;
+- redeem codes as hash-only bearer instruments: balance and invitation types,
+  batch generation (plaintext returned exactly once), admin list/disable/
+  delete, a per-user failure limiter on redemption, and a `create-and-redeem`
+  idempotent endpoint for external fulfillment systems;
+- an invitation-code registration gate (admin toggle; the code is consumed
+  atomically, and a concurrently stolen code disables the mistakenly created
+  account fail-closed);
+- base-price-table pricing (LiteLLM format, embedded bootstrap snapshot
+  overridable via `E2M_PRICE_TABLE_PATH`) with a per-group sell-price
+  multiplier; upstreams created without explicit prices materialize
+  base x rate x multiplier, and unknown models fail closed;
+- a customer-facing model market listing each group's best current sell price
+  without exposing upstream identity, supplier cost, or capacity;
+- per-user platform concurrency and RPM limits, platform wallet low-balance
+  alerts, and platform key expiry;
+- a unified settings module (`internal/settings`): commerce runtime values
+  live in the shared `system_settings` store, the database value is
+  authoritative and hot-applies without a restart, and `E2M_USD_TO_CNY_RATE`
+  and `E2M_PLATFORM_BALANCE_THRESHOLD` only seed the first boot.
+
+Console surfaces: the sidebar splits into an admin section (groups, upstream
+accounts, customer instances, redeem codes, payment orders, users, system
+settings) and a common section shared by every role (overview, platform
+distribution, model market, recharge, redeem, connectors, pool health,
+notifications, audits). System settings is one page with three tabs
+(registration & security, commerce & pricing, payment channels).
+
+Verification gap: the minimal local stack and `bootstrap-real-gateways.ps1`
+cover forwarding and failover only. The commerce loop has Go and console test
+coverage but no end-to-end acceptance script yet (`bootstrap-commerce.ps1` in
+the execution plan is not implemented).
+
 ## Native Platform Slice Status
 
 The exact `/api/v1/platform/*` management contract and the E2M-hosted
@@ -179,9 +243,11 @@ local Docker run is an environment/integration failure, not a reason to
 restore a separate Sub2API process.
 
 The repository already contains mature Connector management, authentication,
-audit, notification, store, and upstream-related building blocks. Production
-hardening (provider-specific protocol adapters, per-model pricing, payment,
-and later pool allocation) remains outside this native forwarding slice.
+audit, notification, store, and upstream-related building blocks. Provider-
+specific protocol adapters and pool allocation remain outside this native
+forwarding slice. Per-model base-table pricing and the payment/redeem top-up
+loop shipped on 2026-08-04 and are described under Platform Commerce below;
+they are gated by `E2M_ENABLE_PAYMENTS` and closed by default.
 
 ## Explicitly Out of Scope
 
@@ -194,7 +260,9 @@ The following must not be presented as current accepted work:
 - Connector-managed platform upstreams or platform request proxying;
 - duplicated E2M/third-party users, balances, keys, usage, or management calls;
 - supplier dynamic Offers and dynamic acceptance ratios;
-- online payment callbacks, supplier payable, withdrawal, or settlement;
+- supplier payable, withdrawal, or settlement;
+- subscription plans and quota windows, OAuth subscription upstream accounts,
+  or a `/v1/messages` protocol bridge (2026-08-04 decisions);
 - MaiBot, cyber-risk review, or content-review services.
 
 Historical database migrations and implementation packages are retained to

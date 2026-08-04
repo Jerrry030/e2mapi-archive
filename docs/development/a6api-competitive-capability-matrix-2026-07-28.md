@@ -1,5 +1,7 @@
 # A6API Competitive Capability Matrix
 
+> **历史文档（2026-07-28 快照）。** 本文所述事实已被 2026-08-04 平台商业化批次全面取代：支付下单与回调、钱包充值、兑换码、基准价目表定价、用户级限流、统一设置模块均已实现（默认由 `E2M_ENABLE_PAYMENTS` 关闭），控制台信息架构也已重构为「平台管理 / 通用功能」两区。本文**不再对任何其他文档具有优先权**；现状以 [current-state.md](current-state.md) 与 [platform-commerce-execution-plan.md](platform-commerce-execution-plan.md) 为准。
+
 Date: 2026-07-28
 
 ## Scope and evidence
@@ -32,8 +34,8 @@ A6API is assessed only from its public surface and public product statements.
 | Decision integrity | User-facing metrics and tags; public material does not expose evidence lineage | Fact version, freshness, completeness, evidence links, exact decimals, Pareto and no cross-route metric splicing | E2M structural advantage |
 | Credentials and topology | Not verifiable anonymously | Connector-local admin/source credentials, Vault references, anonymous owner-market DTO, strict owner isolation | E2M structural advantage |
 | Governance | Not verifiable anonymously | RBAC, approvals, operation audits, durable tasks, uncertain-result freeze and operator recovery | E2M structural advantage |
-| Protocol/data plane | OpenAI compatible plus Claude/Gemini native; image/audio/rerank/realtime and task APIs are publicly documented | Intentionally a sidecar control plane; does not proxy inference requests | Different product boundary; do not copy this into Core |
-| Commerce | Supplier onboarding, recharge/balance, metering, settlement and traffic sharing are publicly advertised | Commercial code exists only behind disabled preview flags; no production wallet/debit/settlement loop | A6API leads; this is not the immediate managed-pool MVP objective |
+| Protocol/data plane | OpenAI compatible plus Claude/Gemini native; image/audio/rerank/realtime and task APIs are publicly documented | OpenAI-compatible only. **Correction (2026-08-04): Core does proxy inference requests** — it serves `/v1/chat/completions` in-process for the E2M platform link; it still never proxies the customer's own gateway traffic | Different protocol breadth; the sidecar-only claim no longer holds |
+| Commerce | Supplier onboarding, recharge/balance, metering, settlement and traffic sharing are publicly advertised | **Correction (2026-08-04):** wallet, reserve/settle debit, self-serve recharge (Stripe/EasyPay), redeem codes and base-table pricing are implemented behind `E2M_ENABLE_PAYMENTS` (closed by default, not absent). Supplier-side payable/settlement remains out of scope | Gap narrowed to supplier finance and subscription plans |
 | SLO transparency | Live success/latency/recent-success signals | Rich operational facts, but no owner-facing SLO/error-budget product | Important next step for leadership |
 
 ## What to learn first
@@ -57,6 +59,8 @@ A6API is assessed only from its public surface and public product statements.
    intermediation.
 
 ## Implemented in this change
+
+> **订正（2026-08-04）**：本节声称交付的 `GET /api/v1/owner/model-market` 与 owner-only `/model-market` 页面，其 Go 路由当前**未注册**；`/model-market` 路径已由原生的 `PlatformModelMarket` 页与 `GET /api/v1/platform/model-market` 端点接管，旧页面文件保留但未挂载。
 
 - `GET /api/v1/owner/model-market`, strictly scoped to the current owner and
   filtered by `q`, `price_dimension` and bounded `limit`.

@@ -8,16 +8,21 @@ This file focuses on how to run and extend Core.
 
 ## Responsibilities
 
-- Health check.
-- User, instance, and supply-offer APIs.
-- Per-instance Connector enrollment, task leasing, runtime state, and lifecycle APIs.
-- Adapter capabilities API.
-- Gateway account list, schedulable toggle, and account switch APIs.
-- Health snapshot API.
-- Operation audit model.
-- Notification route model and Feishu/QQ notification dispatch.
-- Approval request API for L2 actions.
-- Billing statement API.
+- Health check, local authentication, users, roles, and registration security.
+- Managed customer instances plus per-instance Connector enrollment, task
+  leasing, runtime state, and lifecycle APIs.
+- Adapter capabilities, gateway account list, schedulable toggle, account
+  switch, and health snapshot APIs for the customer-owned pool.
+- Operation audit model; notification routes with Feishu/QQ/webhook dispatch
+  and a durable delivery outbox.
+- Platform distribution: groups and model access, encrypted upstream accounts,
+  downstream API keys, the unified wallet, metering, and the E2M-hosted
+  OpenAI-compatible `/v1/chat/completions` data plane.
+- Platform commerce behind `E2M_ENABLE_PAYMENTS`: payment channels/orders/
+  callbacks, redeem codes and the invitation gate, base-table pricing with the
+  group sell-price multiplier, and the customer model market.
+- Unified runtime settings (`internal/settings`), hot-applied without a
+  restart.
 
 ## Local Startup
 
@@ -59,85 +64,18 @@ go run ./app/e2m-core/cmd/e2m-core
 
 ## Current Endpoints
 
-```text
-GET    /healthz
-GET    /api/v1/auth/public-config
-POST   /api/v1/auth/login
-POST   /api/v1/auth/register
-POST   /api/v1/auth/logout
-GET    /api/v1/auth/me
-GET    /api/v1/system/auth-settings
-PUT    /api/v1/system/auth-settings
-GET    /api/v1/users
-POST   /api/v1/users
-GET    /api/v1/users/{id}
-PUT    /api/v1/users/{id}
-POST   /api/v1/users/{id}/reset-password
-GET    /api/v1/instances
-POST   /api/v1/instances
-PUT    /api/v1/instances/{id}
-POST   /api/v1/instances/{id}/connector-install
-GET    /api/v1/health-snapshots
-GET    /api/v1/instances/{id}/monitor-policy
-PUT    /api/v1/instances/{id}/monitor-policy
-POST   /api/v1/instances/{id}/health-check
-GET    /api/v1/billing/statement
-GET    /api/v1/approvals
-POST   /api/v1/approvals
-POST   /api/v1/approvals/{id}/approve
-POST   /api/v1/approvals/{id}/reject
-GET    /api/v1/instances/{id}/accounts
-POST   /api/v1/instances/{id}/accounts/switch
-POST   /api/v1/instances/{id}/accounts/{accountId}/schedulable
-GET    /api/v1/supply-offers
-POST   /api/v1/supply-offers
-PUT    /api/v1/supply-offers/{id}
-POST   /api/v1/supply-offers/{id}/revoke
-POST   /api/v1/supply-offers/{id}/allocate
-POST   /api/v1/supply-ledger/{id}/revoke
-GET    /api/v1/supply-ledger
-GET    /api/v1/connectors
-POST   /api/v1/connectors/enrollments
-POST   /api/v1/connectors/enroll
-POST   /api/v1/connectors/{id}/rotate-token
-POST   /api/v1/connectors/{id}/revoke
-PUT    /api/v1/instances/{id}/connector
-GET    /api/v1/connector-tasks
-POST   /api/v1/connectors/tasks/lease
-POST   /api/v1/connectors/tasks/{id}/complete
-GET    /api/v1/adapter-capabilities
-GET    /api/v1/audits
-GET    /api/v1/events/stream
-GET    /api/v1/notification-routes
-POST   /api/v1/notification-routes
-PUT    /api/v1/notification-routes/{id}
-DELETE /api/v1/notification-routes/{id}
-GET    /api/v1/secrets
-POST   /api/v1/secrets
-DELETE /api/v1/secrets
-GET    /api/v1/upstream-pools
-POST   /api/v1/upstream-pools
-PUT    /api/v1/upstream-pools/{id}
-GET    /api/v1/upstream-channels
-POST   /api/v1/upstream-channels
-PUT    /api/v1/upstream-channels/{id}
-GET    /api/v1/route-plans
-POST   /api/v1/route-plans
-PUT    /api/v1/route-plans/{id}
-POST   /api/v1/route-plans/{id}/reconcile
-POST   /api/v1/route-plans/{id}/rollback
-GET    /api/v1/published-bindings
-GET    /api/v1/reconcile-runs
-GET    /api/v1/channel-health-snapshots
-GET    /api/v1/auto-switch-decisions
-GET    /api/v1/auto-switch-decisions/{id}
-GET    /api/v1/route-plans/{id}/auto-switch-summary
-POST   /api/v1/route-plans/{id}/auto-switch/evaluate
-POST   /api/v1/auto-switch-decisions/{id}/observe
-GET    /api/v1/route-strategies
-POST   /api/v1/route-strategies
-DELETE /api/v1/route-strategies/{id}
-```
+Do not maintain a hand-written endpoint list here — it has repeatedly drifted
+from the code. The authoritative route table is the registration block in
+`app/e2m-core/internal/httpapi/server.go` (`Routes()`), plus
+`registerPlatformDistributionRoutes` in `platform_distribution.go` and the
+data-plane route mounted by `cmd/e2m-core/main.go`.
+
+For the product-level contract summary, see the route blocks in
+[current-state.md](current-state.md). Note that many historical handlers exist
+in `internal/httpapi` without being registered (billing, approvals, supply
+offers, route plans, auto-switch, route strategies, upstream intelligence);
+their presence in the source tree is not evidence that the capability is
+reachable.
 
 Example instance creation:
 

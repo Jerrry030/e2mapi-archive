@@ -1,5 +1,7 @@
 # 当前闭环、Core / Connector 边界与本地数据源
 
+> **历史文档（2026-07-15 快照）。** 本文所述事实已被 2026-08-04 平台商业化批次全面取代：支付下单与回调、钱包充值、兑换码、基准价目表定价、用户级限流、统一设置模块均已实现（默认由 `E2M_ENABLE_PAYMENTS` 关闭），控制台信息架构也已重构为「平台管理 / 通用功能」两区。本文**不再对任何其他文档具有优先权**；现状以 [current-state.md](current-state.md) 与 [platform-commerce-execution-plan.md](platform-commerce-execution-plan.md) 为准。
+
 更新时间：2026-07-15
 
 ## 当前结论

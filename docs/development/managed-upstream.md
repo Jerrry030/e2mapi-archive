@@ -1,5 +1,7 @@
 # Managed Upstream Workflow
 
+> **该子系统当前未挂载。** 截至 2026-08-04，本文描述的 HTTP 端点未在 `internal/httpapi/server.go` 的 `Routes()` 中注册，处于暗启动状态：代码与测试存在，但通过当前 E2M API 不可达。本文保留为设计与验收参考，不代表当前可用能力。现状见 [current-state.md](current-state.md)。
+
 > Connector protocol v2 executes typed create/update/delete tasks with local
 > binding resolution. Platform-managed retirement drains immediately and
 > enqueues a generation-fenced delete after 30 minutes; owner-provided accounts

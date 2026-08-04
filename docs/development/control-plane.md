@@ -50,15 +50,21 @@ docker compose -f deployments/templates/compose/e2m-core-dev.compose.yml up --bu
 ```
 
 Create a gateway instance in the console, then use its generated Connector
-install guide. The dev stack starts PostgreSQL, Redis, Core, and the three mock
+install guide. The dev stack starts PostgreSQL, Core, and the three mock
 gateways; Connectors are installed per instance rather than sharing a global
 development credential.
 
 ## MVP Boundary
 
-The current side-car control path covers instance inventory, gateway account
-operations, health and automatic switching, audit, notification, approval,
-billing, authentication, and per-instance Connector enrollment and lifecycle.
+Two paths run in one Core process. The customer-side control path covers
+instance inventory, gateway account operations, health, audit, notification,
+authentication, and per-instance Connector enrollment and lifecycle. The
+platform path additionally makes Core the traffic gateway for E2M's own
+distribution: it serves `POST /v1/chat/completions` in-process with
+authentication, wallet reservation, scheduling, failover, and settlement, plus
+the commerce surface behind `E2M_ENABLE_PAYMENTS`.
 
-External secret backends, mTLS/task signing, deployment hosting, and a unified
-traffic gateway remain outside the current scope.
+External secret backends, mTLS/task signing, and deployment hosting remain
+outside the current scope. Note that Core never proxies the customer's own
+gateway traffic — the traffic gateway role applies to the E2M platform link
+only.

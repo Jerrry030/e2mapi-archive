@@ -1,5 +1,7 @@
 # Upstream intelligence operations runbook
 
+> **该子系统当前未挂载。** 截至 2026-08-04，本文描述的 HTTP 端点未在 `internal/httpapi/server.go` 的 `Routes()` 中注册，处于暗启动状态：代码与测试存在，但通过当前 E2M API 不可达。本文保留为设计与验收参考，不代表当前可用能力。现状见 [current-state.md](current-state.md)。
+
 This runbook covers UI-10 through UI-17 operational response. It assumes Core
 stores only sanitized facts: upstream endpoints, tokens, cookies, headers and
 raw responses remain Connector-local and must never be copied into tickets,

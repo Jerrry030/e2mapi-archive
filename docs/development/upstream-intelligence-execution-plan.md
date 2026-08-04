@@ -1,5 +1,7 @@
 # 上游情报与安全优化闭环执行计划
 
+> **该子系统当前未挂载。** 截至 2026-08-04，本文描述的 HTTP 端点未在 `internal/httpapi/server.go` 的 `Routes()` 中注册，处于暗启动状态：代码与测试存在，但通过当前 E2M API 不可达。本文保留为设计与验收参考，不代表当前可用能力。现状见 [current-state.md](current-state.md)。
+
 更新：2026-07-27
 
 状态：UI-00..17 已完成本地/disposable 实现与可复现终验。2026-07-27 的冻结候选在同一 849-file canonical build-input SHA-256 `ee8eba1066b55a578e938ffb27d23dc3228545e49738d4fd99955d489474281b` 上通过现行 schema-4 三来源情报、schema-6 NewAPI 加权闭环、PostgreSQL、Linux race、安全、性能、Prometheus、双语/等价表格/移动布局及生产资产浏览器门禁，UI-17 正式签收。这里的签收限定于当前工作树和隔离夹具，不表示公开发布、生产部署或真实模型流量验收
