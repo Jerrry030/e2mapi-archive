@@ -100,8 +100,8 @@ export const consoleMenu: MenuNode[] = [
   },
   {
     path: '/system-settings',
-    name: '注册与安全',
-    i18nKey: 'consoleMenu.registrationSecurity',
+    name: '系统设置',
+    i18nKey: 'consoleMenu.systemSettings',
     icon: 'platform',
     roles: ['admin'],
   },

@@ -11,6 +11,7 @@ import (
 
 const authSystemSettingsKey = "auth.registration"
 const paymentConfigKey = "payment.collection"
+const commerceSettingsKey = "commerce.runtime"
 
 type authSystemSettingsPayload struct {
 	RegistrationEnabled              bool     `json:"registration_enabled"`
@@ -71,6 +72,45 @@ func (s *PostgresStore) UpsertAuthSystemSettings(ctx context.Context, input cont
 	out.UpdatedAt = updatedAt
 	out.TurnstileSecretConfigured = out.TurnstileSecretKey != ""
 	return out, nil
+}
+
+func (s *PostgresStore) GetCommerceSettings(ctx context.Context) (contracts.CommerceSettings, error) {
+	row := s.pool.QueryRow(ctx, `SELECT value, updated_at FROM system_settings WHERE key=$1`, commerceSettingsKey)
+	var raw []byte
+	var updatedAt time.Time
+	if err := row.Scan(&raw, &updatedAt); err != nil {
+		if errors.Is(err, pgxNoRows()) {
+			return contracts.CommerceSettings{}, ErrNotFound
+		}
+		return contracts.CommerceSettings{}, err
+	}
+	var settings contracts.CommerceSettings
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return contracts.CommerceSettings{}, err
+	}
+	settings.UpdatedAt = updatedAt
+	return settings, nil
+}
+
+func (s *PostgresStore) UpsertCommerceSettings(ctx context.Context, input contracts.CommerceSettings) (contracts.CommerceSettings, error) {
+	settings := input
+	settings.UpdatedAt = time.Time{}
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return contracts.CommerceSettings{}, err
+	}
+	var updatedAt time.Time
+	err = s.pool.QueryRow(ctx,
+		`INSERT INTO system_settings (key, value, updated_at)
+		 VALUES ($1, $2::jsonb, now())
+		 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()
+		 RETURNING updated_at`,
+		commerceSettingsKey, string(raw)).Scan(&updatedAt)
+	if err != nil {
+		return contracts.CommerceSettings{}, err
+	}
+	settings.UpdatedAt = updatedAt
+	return settings, nil
 }
 
 func (s *PostgresStore) GetPaymentConfig(ctx context.Context) (contracts.PaymentConfig, error) {

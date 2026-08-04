@@ -38,6 +38,8 @@ import type {
   GenerateRedeemCodesInput,
   GenerateRedeemCodesResponse,
   ModelMarketGroup,
+  CommerceSettings,
+  UpdateCommerceSettingsInput,
   RedeemCode,
   RedeemCodeListParams,
   RedeemCodePage,
@@ -314,6 +316,9 @@ export const endpoints = {
   updateAuthSystemSettings: (body: UpdateAuthSystemSettingsInput) =>
     apiClient.request<AuthSystemSettings>('/system/auth-settings', { method: 'PUT', body }),
 
+  getCommerceSettings: () => apiClient.request<CommerceSettings>('/admin/settings/commerce'),
+  updateCommerceSettings: (body: UpdateCommerceSettingsInput) =>
+    apiClient.request<CommerceSettings>('/admin/settings/commerce', { method: 'PUT', body }),
   getPaymentConfig: () => apiClient.request<PaymentConfig>('/admin/payment/config'),
   updatePaymentConfig: (body: UpdatePaymentConfigInput) =>
     apiClient.request<PaymentConfig>('/admin/payment/config', { method: 'PUT', body }),

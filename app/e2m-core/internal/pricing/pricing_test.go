@@ -41,7 +41,7 @@ func TestQuoteCNYConversion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	service := NewService(table, 7.0)
+	service := NewService(table, StaticRate(7.0))
 
 	// 0.15 USD/M × 7.0 = 1.05 CNY/M = 1_050_000 micros at 1.0x.
 	quote, ok := service.QuoteCNY("m1", 10_000)
@@ -59,11 +59,24 @@ func TestQuoteCNYConversion(t *testing.T) {
 	if _, ok := service.QuoteCNY("missing", 10_000); ok {
 		t.Fatalf("unknown model must fail")
 	}
-	if NewService(table, 0) != nil {
-		t.Fatalf("service without a rate must be nil (disabled)")
+	if NewService(nil, StaticRate(7.0)) != nil || NewService(table, nil) != nil {
+		t.Fatalf("service without a table or rate provider must be nil")
 	}
 	var disabled *Service
 	if disabled.Enabled() {
 		t.Fatalf("nil service must report disabled")
+	}
+	// A live provider returning zero disables pricing dynamically.
+	dynamicRate := 7.0
+	dynamic := NewService(table, func() float64 { return dynamicRate })
+	if !dynamic.Enabled() {
+		t.Fatalf("positive live rate must enable pricing")
+	}
+	dynamicRate = 0
+	if dynamic.Enabled() {
+		t.Fatalf("zero live rate must disable pricing")
+	}
+	if _, ok := dynamic.QuoteCNY("m1", 10_000); ok {
+		t.Fatalf("quotes must fail closed while the rate is zero")
 	}
 }

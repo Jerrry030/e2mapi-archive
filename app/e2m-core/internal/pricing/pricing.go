@@ -100,26 +100,31 @@ func (t *Table) Resolve(model string) (ModelPrice, bool) {
 	return ModelPrice{}, false
 }
 
-// Service combines a table with the configured USD→CNY conversion rate.
+// Service combines a table with a live USD→CNY conversion-rate provider. The
+// rate is read per quote so operators can change it through the settings
+// module without a restart; a non-positive rate disables pricing fail-closed.
 type Service struct {
-	table    *Table
-	usdToCny float64
+	table *Table
+	rate  func() float64
 }
 
-func NewService(table *Table, usdToCny float64) *Service {
-	if table == nil || usdToCny <= 0 {
+func NewService(table *Table, rate func() float64) *Service {
+	if table == nil || rate == nil {
 		return nil
 	}
-	return &Service{table: table, usdToCny: usdToCny}
+	return &Service{table: table, rate: rate}
 }
 
-func (s *Service) Enabled() bool { return s != nil }
+// StaticRate adapts a fixed conversion rate (tests, one-shot tooling).
+func StaticRate(rate float64) func() float64 { return func() float64 { return rate } }
+
+func (s *Service) Enabled() bool { return s != nil && s.rate() > 0 }
 
 func (s *Service) USDToCNYRate() float64 {
 	if s == nil {
 		return 0
 	}
-	return s.usdToCny
+	return s.rate()
 }
 
 // Quote is a resolved sell price in CNY micros per million tokens, after the
@@ -135,9 +140,15 @@ type Quote struct {
 }
 
 // QuoteCNY resolves one model at a group multiplier (basis points; 10000 =
-// 1.0x). It fails closed on unknown models instead of guessing.
+// 1.0x). It fails closed on unknown models or a disabled rate instead of
+// guessing. The rate is read once per quote so a concurrent settings change
+// yields an internally consistent quote.
 func (s *Service) QuoteCNY(model string, multiplierBps int64) (Quote, bool) {
 	if s == nil || multiplierBps <= 0 {
+		return Quote{}, false
+	}
+	rate := s.rate()
+	if rate <= 0 {
 		return Quote{}, false
 	}
 	price, ok := s.table.Resolve(model)
@@ -146,12 +157,12 @@ func (s *Service) QuoteCNY(model string, multiplierBps int64) (Quote, bool) {
 	}
 	return Quote{
 		Model:                  model,
-		InputMicrosPerMillion:  cnyMicrosPerMillion(price.InputUSDPerToken, s.usdToCny, multiplierBps),
-		OutputMicrosPerMillion: cnyMicrosPerMillion(price.OutputUSDPerToken, s.usdToCny, multiplierBps),
+		InputMicrosPerMillion:  cnyMicrosPerMillion(price.InputUSDPerToken, rate, multiplierBps),
+		OutputMicrosPerMillion: cnyMicrosPerMillion(price.OutputUSDPerToken, rate, multiplierBps),
 		InputUSDPerMillion:     price.InputUSDPerToken * 1_000_000,
 		OutputUSDPerMillion:    price.OutputUSDPerToken * 1_000_000,
 		RateMultiplierBps:      multiplierBps,
-		USDToCNYRate:           s.usdToCny,
+		USDToCNYRate:           rate,
 	}, true
 }
 

@@ -35,6 +35,7 @@ const zh = {
     credentialVault: '凭证密管',
     auditLog: '审计日志',
     registrationSecurity: '注册与安全',
+    systemSettings: '系统设置',
     advancedTools: '高级工具',
     legacyAccountHealth: '旧账号健康',
     ownedAccountApprovals: '自有账号审批',
@@ -69,10 +70,24 @@ const zh = {
     },
   },
   systemSettings: {
-    title: '注册与安全',
-    subtitle: '账号注册策略与访问防护',
-    adminOnly: '仅管理员可配置系统级注册策略。',
-    tabs: { auth: '注册与安全', payment: '收款渠道' },
+    title: '系统设置',
+    subtitle: '注册安全、商务定价与收款渠道的统一设置入口',
+    adminOnly: '仅管理员可配置系统级设置。',
+    tabs: { auth: '注册与安全', commerce: '商务定价', payment: '收款渠道' },
+  },
+  commerceSettings: {
+    saved: '商务设置已保存并即时生效',
+    save: '保存商务设置',
+    intro: {
+      message: '商务运行参数集中在此管理，保存后即时生效，无需重启',
+      description:
+        '环境变量仅在首次启动时作为种子值写入；此后以这里保存的值为准。清空字段即关闭对应能力（保守失效）。',
+    },
+    rate: '美元→人民币汇率',
+    rateExtra: '用于基准价目表定价（基准价 × 汇率 × 分组倍率）。留空则关闭基准价定价，仅显式上游价格生效。',
+    threshold: '钱包低余额告警线（元）',
+    thresholdExtra: '客户平台钱包余额跌破该值时经通知路由告警（边沿触发）。留空关闭告警。',
+    updatedAt: '最近更新：',
   },
   capabilities: {
     modes: {

@@ -35,6 +35,7 @@ const en = {
     credentialVault: 'Credential vault',
     auditLog: 'Audit log',
     registrationSecurity: 'Registration & security',
+    systemSettings: 'System settings',
     advancedTools: 'Advanced tools',
     legacyAccountHealth: 'Legacy account health',
     ownedAccountApprovals: 'Own-account approvals',
@@ -69,10 +70,30 @@ const en = {
     },
   },
   systemSettings: {
-    title: 'Registration & security',
-    subtitle: 'Account registration policy and access protection',
-    adminOnly: 'Only platform administrators can configure system registration policy.',
-    tabs: { auth: 'Registration & security', payment: 'Payment channels' },
+    title: 'System settings',
+    subtitle: 'One place for registration security, commerce pricing, and payment channels',
+    adminOnly: 'Only platform administrators can configure system settings.',
+    tabs: {
+      auth: 'Registration & security',
+      commerce: 'Commerce & pricing',
+      payment: 'Payment channels',
+    },
+  },
+  commerceSettings: {
+    saved: 'Commerce settings saved and applied immediately',
+    save: 'Save commerce settings',
+    intro: {
+      message: 'Commerce runtime knobs live here and apply immediately after saving',
+      description:
+        'Environment variables only seed the very first boot; afterwards the values saved here are authoritative. Clearing a field disables the capability fail-closed.',
+    },
+    rate: 'USD → CNY rate',
+    rateExtra:
+      'Used by base-price-table pricing (base price × rate × group multiplier). Empty disables base-table pricing; explicit upstream prices keep working.',
+    threshold: 'Wallet low-balance alert line (CNY)',
+    thresholdExtra:
+      'Alerts through the notification routes when a customer platform wallet drops below this value (edge-triggered). Empty disables alerts.',
+    updatedAt: 'Last updated: ',
   },
   capabilities: {
     modes: {

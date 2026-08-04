@@ -20,24 +20,26 @@ import (
 const DefaultInterval = 5 * time.Minute
 
 type Runner struct {
-	store           store.Store
-	router          *notify.Router
-	currency        string
-	thresholdMicros int64
-	interval        time.Duration
+	store    store.Store
+	router   *notify.Router
+	currency string
+	// threshold is read every sweep so the settings module can enable,
+	// disable, or move the alert line without a restart.
+	threshold func() int64
+	interval  time.Duration
 
 	mu    sync.Mutex
 	below map[int64]bool
 }
 
-func New(st store.Store, router *notify.Router, currency string, thresholdMicros int64, intervals ...time.Duration) *Runner {
+func New(st store.Store, router *notify.Router, currency string, threshold func() int64, intervals ...time.Duration) *Runner {
 	interval := DefaultInterval
 	if len(intervals) > 0 && intervals[0] > 0 {
 		interval = intervals[0]
 	}
 	return &Runner{
 		store: st, router: router, currency: currency,
-		thresholdMicros: thresholdMicros, interval: interval, below: map[int64]bool{},
+		threshold: threshold, interval: interval, below: map[int64]bool{},
 	}
 }
 
@@ -56,10 +58,14 @@ func (r *Runner) Run(ctx context.Context) {
 }
 
 func (r *Runner) RunOnce(ctx context.Context) {
-	if r == nil || r.store == nil || r.thresholdMicros <= 0 {
+	if r == nil || r.store == nil || r.threshold == nil {
 		return
 	}
-	wallets, err := r.store.ListWalletsBelow(ctx, r.currency, r.thresholdMicros)
+	thresholdMicros := r.threshold()
+	if thresholdMicros <= 0 {
+		return
+	}
+	wallets, err := r.store.ListWalletsBelow(ctx, r.currency, thresholdMicros)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("wallet-alert: list wallets failed: %v", err)
@@ -82,7 +88,7 @@ func (r *Runner) RunOnce(ctx context.Context) {
 
 	for _, wallet := range fresh {
 		text := fmt.Sprintf("平台钱包余额 %.2f %s，低于阈值 %.2f，请及时充值以免请求被拒绝",
-			float64(wallet.AvailableMicros)/1_000_000, wallet.Currency, float64(r.thresholdMicros)/1_000_000)
+			float64(wallet.AvailableMicros)/1_000_000, wallet.Currency, float64(thresholdMicros)/1_000_000)
 		_, _ = r.store.AppendAudit(ctx, contracts.OperationAudit{
 			UserID: wallet.UserID, ActorType: "system", ActorID: "wallet-alert",
 			Action: "platform.wallet.balance_low", RiskLevel: contracts.RiskLevelL0,

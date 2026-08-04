@@ -339,6 +339,10 @@ type Store interface {
 	UpsertAuthSystemSettings(ctx context.Context, input contracts.AuthSystemSettings) (contracts.AuthSystemSettings, error)
 	GetPaymentConfig(ctx context.Context) (contracts.PaymentConfig, error)
 	UpsertPaymentConfig(ctx context.Context, input contracts.PaymentConfig) (contracts.PaymentConfig, error)
+	// Commerce runtime settings live in the same unified system_settings
+	// store; environment variables only seed the first boot.
+	GetCommerceSettings(ctx context.Context) (contracts.CommerceSettings, error)
+	UpsertCommerceSettings(ctx context.Context, input contracts.CommerceSettings) (contracts.CommerceSettings, error)
 
 	// Collection provider instances. SecretRefs contains opaque Vault references
 	// only; provider credentials never live in the database.

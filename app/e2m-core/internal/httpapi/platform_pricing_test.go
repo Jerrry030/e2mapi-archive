@@ -22,7 +22,7 @@ func pricingTestService(t *testing.T) *pricing.Service {
 	if err != nil {
 		t.Fatalf("parse test table: %v", err)
 	}
-	return pricing.NewService(table, 7.0)
+	return pricing.NewService(table, pricing.StaticRate(7.0))
 }
 
 func TestRateMultiplierParsing(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 	"e2m.local/core/internal/orchestrator"
 	"e2m.local/core/internal/pricing"
 	"e2m.local/core/internal/recommendationrollout"
+	"e2m.local/core/internal/settings"
 	"e2m.local/core/internal/store"
 	"e2m.local/core/internal/vault"
 	"e2m.local/core/internal/webui"
@@ -56,6 +57,7 @@ type Server struct {
 	quality                            QualityObservationRecorder
 	costObservations                   store.UpstreamCostObservationStore
 	pricing                            *pricing.Service
+	settings                           *settings.Service
 	secrets                            vault.Vault
 	notificationRouter                 *notify.Router
 	notificationTests                  notificationTestLimiter
@@ -260,6 +262,8 @@ func (s *Server) Routes() http.Handler {
 	api.HandleFunc("GET /api/v1/auth/me", s.handleMe)
 	api.HandleFunc("GET /api/v1/system/auth-settings", s.handleGetAuthSystemSettings)
 	api.HandleFunc("PUT /api/v1/system/auth-settings", s.handleUpdateAuthSystemSettings)
+	api.HandleFunc("GET /api/v1/admin/settings/commerce", s.handleGetCommerceSettings)
+	api.HandleFunc("PUT /api/v1/admin/settings/commerce", s.handleUpdateCommerceSettings)
 	api.HandleFunc("GET /api/v1/users", s.handleListUsers)
 	api.HandleFunc("POST /api/v1/users", s.handleCreateUser)
 	api.HandleFunc("GET /api/v1/users/{id}", s.handleGetUser)

@@ -35,7 +35,16 @@ func TestWalletAlertIsEdgeTriggered(t *testing.T) {
 		t.Fatalf("seed wallet: %v", err)
 	}
 
-	runner := New(st, nil, "CNY", 5_000_000, time.Hour)
+	threshold := int64(5_000_000)
+	runner := New(st, nil, "CNY", func() int64 { return threshold }, time.Hour)
+
+	// A zero live threshold disables the sweep entirely.
+	threshold = 0
+	runner.RunOnce(ctx)
+	if got := lowBalanceAudits(t, st, user.ID); got != 0 {
+		t.Fatalf("disabled threshold must not alert, got %d", got)
+	}
+	threshold = 5_000_000
 
 	// Below threshold: exactly one alert even across repeated sweeps.
 	runner.RunOnce(ctx)

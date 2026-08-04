@@ -19,6 +19,7 @@ import { AbsoluteTime } from '../components/common'
 import { consoleFeatureFlags } from '../config/featureFlags'
 import { t } from '../i18n'
 import { useLocaleVersion } from '../i18n/react'
+import CommerceSettingsPanel from './CommerceSettingsPanel'
 import PaymentSettings from './PaymentSettings'
 import {
   searchForSystemSettingsView,
@@ -61,6 +62,7 @@ export default function SystemSettings() {
   const view = systemSettingsViewFromSearch(searchParams, paymentsEnabled)
   const tabs = [
     { key: 'auth', tab: t('systemSettings.tabs.auth') },
+    { key: 'commerce', tab: t('systemSettings.tabs.commerce', '商务定价') },
     ...(paymentsEnabled ? [{ key: 'payment', tab: t('systemSettings.tabs.payment') }] : []),
   ]
 
@@ -99,7 +101,7 @@ export default function SystemSettings() {
       replace: true,
     })
 
-  if (view === 'payment') {
+  if (view === 'payment' || view === 'commerce') {
     return (
       <PageContainer
         title={t('systemSettings.title')}
@@ -108,7 +110,7 @@ export default function SystemSettings() {
         tabActiveKey={view}
         onTabChange={changeView}
       >
-        <PaymentSettings />
+        {view === 'payment' ? <PaymentSettings /> : <CommerceSettingsPanel />}
       </PageContainer>
     )
   }

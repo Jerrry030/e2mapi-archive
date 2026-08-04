@@ -31,6 +31,7 @@ import (
 	"e2m.local/core/internal/pricing"
 	"e2m.local/core/internal/publish"
 	"e2m.local/core/internal/retirement"
+	"e2m.local/core/internal/settings"
 	"e2m.local/core/internal/store"
 	"e2m.local/core/internal/supplygateway"
 	"e2m.local/core/internal/vault"
@@ -132,16 +133,20 @@ func run() error {
 	if getenv("E2M_ENABLE_PAYMENTS", "") == "true" {
 		paymentExpiryWorker = paymentexpiry.New(st, v, paymentExpiryInterval()).Run
 	}
-	// Low-balance alerts stay off until an explicit threshold is configured.
-	var walletAlertWorker coreWorker
-	if raw := strings.TrimSpace(os.Getenv("E2M_PLATFORM_BALANCE_THRESHOLD")); raw != "" {
-		threshold, thresholdErr := strconv.ParseFloat(raw, 64)
-		if thresholdErr != nil || threshold <= 0 {
-			return fmt.Errorf("e2m-core: E2M_PLATFORM_BALANCE_THRESHOLD must be a positive decimal, got %q", raw)
-		}
-		walletAlertWorker = walletalert.New(st, router, getenv("E2M_SUPPLY_CURRENCY", "CNY"),
-			int64(threshold*1_000_000)).Run
+	// The unified settings module owns commerce runtime configuration. The
+	// environment only seeds the very first boot; afterwards the database
+	// value is authoritative and hot-applies to pricing and alert workers.
+	settingsSvc := settings.New(st)
+	if err := settingsSvc.LoadOrSeed(ctx, contracts.CommerceSettings{
+		USDToCNYRate:          strings.TrimSpace(os.Getenv("E2M_USD_TO_CNY_RATE")),
+		BalanceAlertThreshold: strings.TrimSpace(os.Getenv("E2M_PLATFORM_BALANCE_THRESHOLD")),
+	}); err != nil {
+		return fmt.Errorf("e2m-core: load commerce settings failed: %w", err)
 	}
+	// The alert worker always runs; the live settings threshold decides
+	// whether a sweep does anything.
+	walletAlertWorker := walletalert.New(st, router, getenv("E2M_SUPPLY_CURRENCY", "CNY"),
+		settingsSvc.BalanceAlertThresholdMicros).Run
 	workers := buildCoreWorkers(checker.Run, notifyWorker.Run, retirementWorker, paymentExpiryWorker, walletAlertWorker)
 	server := httpapi.NewServer(st, orch, checker, nil, nil, authSvc, events, publisher)
 	server.SetVault(v)
@@ -155,19 +160,14 @@ func run() error {
 	if getenv("E2M_SUPPLY_ALLOW_INSECURE_UPSTREAMS", "") == "true" || getenv("E2M_ALLOW_INSECURE_SUPPLY_UPSTREAMS", "") == "true" {
 		server.EnableInsecureSupplyUpstreams()
 	}
-	// Base-table pricing stays disabled without an explicit USD→CNY rate so a
-	// missing rate can never silently misprice settlement.
-	if rateRaw := strings.TrimSpace(os.Getenv("E2M_USD_TO_CNY_RATE")); rateRaw != "" {
-		usdToCny, rateErr := strconv.ParseFloat(rateRaw, 64)
-		if rateErr != nil || usdToCny <= 0 {
-			return fmt.Errorf("e2m-core: E2M_USD_TO_CNY_RATE must be a positive decimal, got %q", rateRaw)
-		}
-		priceTable, tableErr := pricing.Load(strings.TrimSpace(os.Getenv("E2M_PRICE_TABLE_PATH")))
-		if tableErr != nil {
-			return fmt.Errorf("e2m-core: load base price table failed: %w", tableErr)
-		}
-		server.SetPricing(pricing.NewService(priceTable, usdToCny))
+	server.SetSettings(settingsSvc)
+	priceTable, tableErr := pricing.Load(strings.TrimSpace(os.Getenv("E2M_PRICE_TABLE_PATH")))
+	if tableErr != nil {
+		return fmt.Errorf("e2m-core: load base price table failed: %w", tableErr)
 	}
+	// Enabled/disabled follows the live settings rate; a zero rate keeps
+	// base-table pricing fail-closed without disturbing explicit prices.
+	server.SetPricing(pricing.NewService(priceTable, settingsSvc.USDToCNYRate))
 	server.SetBusinessFeatureFlags(httpapi.BusinessFeatureFlags{
 		Billing:                   getenv("E2M_ENABLE_BILLING", "") == "true",
 		Payments:                  getenv("E2M_ENABLE_PAYMENTS", "") == "true",

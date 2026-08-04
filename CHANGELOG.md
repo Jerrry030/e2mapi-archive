@@ -26,6 +26,7 @@
 
 ### Changed
 
+- 设置项收敛为统一设置模块：新增 `internal/settings` 服务与"商务定价"设置节（美元→人民币汇率、钱包低余额告警线），存入统一的 `system_settings` 表并可热生效——基准价定价与低余额巡检实时读取，无需重启；`E2M_USD_TO_CNY_RATE`、`E2M_PLATFORM_BALANCE_THRESHOLD` 环境变量降级为首启种子值。控制台"注册与安全"页升级为"系统设置"统一入口（注册与安全 / 商务定价 / 收款渠道三个 tab）。新增 `GET/PUT /api/v1/admin/settings/commerce`（管理员，变更留审计）。
 - 支付相关路径（含 webhook 与充值下单）的功能门禁不再依赖已退役的 `E2M_ENABLE_HYBRID_SUPPLY` 实验开关，仅由 `E2M_ENABLE_PAYMENTS` 控制。
 
 ## [0.3.0] - 2026-08-01

@@ -84,6 +84,7 @@ type MemoryStore struct {
 	recommendationExecutionPolicies []contracts.RecommendationExecutionPolicy
 	authSettings                    *contracts.AuthSystemSettings
 	paymentConfig                   *contracts.PaymentConfig
+	commerceSettings                *contracts.CommerceSettings
 	paymentProviders                []contracts.PaymentProvider
 	paymentOrders                   []contracts.PaymentOrder
 	redeemCodes                     []contracts.RedeemCode
@@ -1901,6 +1902,30 @@ func copyAuthSystemSettings(input contracts.AuthSystemSettings) contracts.AuthSy
 	out := input
 	out.RegistrationEmailSuffixWhitelist = append([]string{}, input.RegistrationEmailSuffixWhitelist...)
 	return out
+}
+
+func (s *MemoryStore) GetCommerceSettings(ctx context.Context) (contracts.CommerceSettings, error) {
+	if err := ctx.Err(); err != nil {
+		return contracts.CommerceSettings{}, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.commerceSettings == nil {
+		return contracts.CommerceSettings{}, ErrNotFound
+	}
+	return *s.commerceSettings, nil
+}
+
+func (s *MemoryStore) UpsertCommerceSettings(ctx context.Context, input contracts.CommerceSettings) (contracts.CommerceSettings, error) {
+	if err := ctx.Err(); err != nil {
+		return contracts.CommerceSettings{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	settings := input
+	settings.UpdatedAt = s.now()
+	s.commerceSettings = &settings
+	return settings, nil
 }
 
 func (s *MemoryStore) GetPaymentConfig(ctx context.Context) (contracts.PaymentConfig, error) {

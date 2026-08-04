@@ -37,6 +37,17 @@ export interface AuthSystemSettings {
   updated_at?: string
 }
 
+export interface CommerceSettings {
+  usd_to_cny_rate: string
+  balance_alert_threshold: string
+  updated_at?: string
+}
+
+export interface UpdateCommerceSettingsInput {
+  usd_to_cny_rate: string
+  balance_alert_threshold: string
+}
+
 export interface UpdateAuthSystemSettingsInput {
   registration_enabled: boolean
   registration_email_suffix_whitelist: string[]
