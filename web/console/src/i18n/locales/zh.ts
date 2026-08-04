@@ -36,6 +36,7 @@ const zh = {
     auditLog: '审计日志',
     registrationSecurity: '注册与安全',
     systemSettings: '系统设置',
+    sections: { admin: '平台管理', common: '通用功能' },
     advancedTools: '高级工具',
     legacyAccountHealth: '旧账号健康',
     ownedAccountApprovals: '自有账号审批',

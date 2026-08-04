@@ -11,16 +11,65 @@ export type MenuIcon =
   | 'platform'
   | 'users'
 
+// MenuSection splits the sidebar the way sub2api does: the admin section
+// holds operator-only surfaces, the common section holds modules every role
+// uses. Administrators see both (admin on top); other roles see only the
+// common modules as a flat list.
+export type MenuSection = 'admin' | 'common'
+
 export interface MenuNode {
   path: string
   name: string
   i18nKey: string
   icon?: MenuIcon
   roles?: UserRole[]
+  section?: MenuSection
   routes?: MenuNode[]
 }
 
-export const consoleMenu: MenuNode[] = [
+const adminSectionMenu: MenuNode[] = [
+  {
+    path: '/instances',
+    name: '客户实例',
+    i18nKey: 'consoleMenu.customerInstances',
+    icon: 'instances',
+    roles: ['admin'],
+  },
+  ...(consoleFeatureFlags.payments
+    ? ([
+        {
+          path: '/redeem-codes',
+          name: '兑换码管理',
+          i18nKey: 'consoleMenu.redeemCodes',
+          icon: 'audit',
+          roles: ['admin'],
+        },
+        {
+          path: '/payment-orders',
+          name: '收款订单（试验）',
+          i18nKey: 'consoleMenu.experimentalPaymentOrders',
+          icon: 'audit',
+          roles: ['admin'],
+        },
+      ] satisfies MenuNode[])
+    : []),
+  {
+    path: '/users',
+    name: '用户与权限',
+    i18nKey: 'consoleMenu.usersPermissions',
+    icon: 'users',
+    roles: ['admin'],
+  },
+  {
+    path: '/system-settings',
+    name: '系统设置',
+    i18nKey: 'consoleMenu.systemSettings',
+    icon: 'platform',
+    roles: ['admin'],
+  },
+]
+
+const commonSectionMenu: MenuNode[] = [
   {
     path: '/',
     name: '平台总览',
@@ -36,13 +85,6 @@ export const consoleMenu: MenuNode[] = [
     roles: ['client'],
   },
   {
-    path: '/instances',
-    name: '客户实例',
-    i18nKey: 'consoleMenu.customerInstances',
-    icon: 'instances',
-    roles: ['admin'],
-  },
-  {
     path: '/platform-distribution',
     name: '平台分发',
     i18nKey: 'consoleMenu.platformDistribution',
@@ -56,6 +98,24 @@ export const consoleMenu: MenuNode[] = [
     icon: 'platform',
     roles: ['admin', 'client'],
   },
+  ...(consoleFeatureFlags.payments
+    ? ([
+        {
+          path: '/recharge',
+          name: '余额充值',
+          i18nKey: 'consoleMenu.recharge',
+          icon: 'platform',
+          roles: ['admin', 'client'],
+        },
+        {
+          path: '/redeem',
+          name: '兑换码',
+          i18nKey: 'consoleMenu.redeem',
+          icon: 'platform',
+          roles: ['admin', 'client'],
+        },
+      ] satisfies MenuNode[])
+    : []),
   {
     path: '/instances',
     name: '托管实例',
@@ -91,55 +151,40 @@ export const consoleMenu: MenuNode[] = [
     icon: 'audit',
     roles: ['admin', 'client'],
   },
-  {
-    path: '/users',
-    name: '用户与权限',
-    i18nKey: 'consoleMenu.usersPermissions',
-    icon: 'users',
-    roles: ['admin'],
-  },
-  {
-    path: '/system-settings',
-    name: '系统设置',
-    i18nKey: 'consoleMenu.systemSettings',
-    icon: 'platform',
-    roles: ['admin'],
-  },
-  ...(consoleFeatureFlags.payments
-    ? ([
-        {
-          path: '/recharge',
-          name: '余额充值',
-          i18nKey: 'consoleMenu.recharge',
-          icon: 'platform',
-          roles: ['admin', 'client'],
-        },
-        {
-          path: '/redeem',
-          name: '兑换码',
-          i18nKey: 'consoleMenu.redeem',
-          icon: 'platform',
-          roles: ['admin', 'client'],
-        },
-        {
-          path: '/redeem-codes',
-          name: '兑换码管理',
-          i18nKey: 'consoleMenu.redeemCodes',
-          icon: 'audit',
-          roles: ['admin'],
-        },
-        {
-          path: '/payment-orders',
-          name: '收款订单（试验）',
-          i18nKey: 'consoleMenu.experimentalPaymentOrders',
-          icon: 'audit',
-          roles: ['admin'],
-        },
-      ] satisfies MenuNode[])
-    : []),
 ]
 
+function forRole(nodes: MenuNode[], activeRole: UserRole): MenuNode[] {
+  return nodes.filter((node) => !node.roles || node.roles.includes(activeRole))
+}
+
+// menuForRole returns the sidebar tree. Administrators get the two labelled
+// sections (admin operations on top, common modules below); every other role
+// gets the flat common list.
 export function menuForRole(activeRole?: UserRole): MenuNode[] {
   if (!activeRole) return []
-  return consoleMenu.filter((node) => !node.roles || node.roles.includes(activeRole))
+  const common = forRole(commonSectionMenu, activeRole)
+  if (activeRole !== 'admin') return common
+  return [
+    {
+      path: '/section/admin',
+      name: '平台管理',
+      i18nKey: 'consoleMenu.sections.admin',
+      section: 'admin',
+      routes: forRole(adminSectionMenu, activeRole),
+    },
+    {
+      path: '/section/common',
+      name: '通用功能',
+      i18nKey: 'consoleMenu.sections.common',
+      section: 'common',
+      routes: common,
+    },
+  ]
+}
+
+// flatMenuPaths lists every leaf path a role can reach, section-independent.
+export function flatMenuPaths(activeRole?: UserRole): string[] {
+  const collect = (nodes: MenuNode[]): string[] =>
+    nodes.flatMap((node) => (node.routes?.length ? collect(node.routes) : [node.path]))
+  return collect(menuForRole(activeRole))
 }

@@ -169,6 +169,7 @@ export default function ConsoleLayout() {
       onCollapse={setCollapsed}
       location={{ pathname: location.pathname }}
       route={{ path: '/', routes: visibleMenu }}
+      menu={{ defaultOpenAll: true, autoClose: false }}
       menuItemRender={(item, dom) => {
         const node = item as { routes?: unknown[] }
         if (node.routes?.length) return dom

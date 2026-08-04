@@ -1,26 +1,32 @@
 import { describe, expect, it } from 'vitest'
-import { menuForRole } from './consoleMenu'
+import { flatMenuPaths, menuForRole } from './consoleMenu'
 
 // The payments feature flag is off in the test environment, so the menu here
 // is the always-on native surface; payment entries have their own gating.
 describe('console menu', () => {
-  it('keeps administrators focused on control-plane operations', () => {
-    expect(menuForRole('admin').map((node) => node.path)).toEqual([
-      '/',
+  it('splits the administrator sidebar into admin and common sections', () => {
+    const sections = menuForRole('admin')
+    expect(sections.map((node) => node.section)).toEqual(['admin', 'common'])
+    expect(sections[0].routes?.map((node) => node.path)).toEqual([
       '/instances',
+      '/users',
+      '/system-settings',
+    ])
+    expect(sections[1].routes?.map((node) => node.path)).toEqual([
+      '/',
       '/platform-distribution',
       '/model-market',
       '/connectors',
       '/pool-health',
       '/notifications',
       '/audits',
-      '/users',
-      '/system-settings',
     ])
   })
 
-  it('keeps owners focused on their own gateway pools', () => {
-    expect(menuForRole('client').map((node) => node.path)).toEqual([
+  it('keeps owners on a flat common-module list', () => {
+    const nodes = menuForRole('client')
+    expect(nodes.every((node) => !node.routes?.length)).toBe(true)
+    expect(nodes.map((node) => node.path)).toEqual([
       '/',
       '/platform-distribution',
       '/model-market',
@@ -49,7 +55,7 @@ describe('console menu', () => {
       '/pool-rollout',
       '/operations-center',
     ]
-    const paths = menuForRole('admin').map((node) => node.path)
+    const paths = flatMenuPaths('admin')
     expect(paths).toContain('/platform-distribution')
     for (const path of retired) expect(paths).not.toContain(path)
   })

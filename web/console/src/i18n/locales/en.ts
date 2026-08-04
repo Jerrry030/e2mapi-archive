@@ -36,6 +36,7 @@ const en = {
     auditLog: 'Audit log',
     registrationSecurity: 'Registration & security',
     systemSettings: 'System settings',
+    sections: { admin: 'Administration', common: 'General' },
     advancedTools: 'Advanced tools',
     legacyAccountHealth: 'Legacy account health',
     ownedAccountApprovals: 'Own-account approvals',
