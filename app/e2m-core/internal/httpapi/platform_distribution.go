@@ -57,6 +57,7 @@ func (s *Server) registerPlatformDistributionRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/v1/platform/wallet-adjustments", s.handleAdjustPlatformWallet)
 	api.HandleFunc("GET /api/v1/platform/usage", s.handleListPlatformUsage)
 	api.HandleFunc("GET /api/v1/platform/pricing/preview", s.handleGetPlatformPricingPreview)
+	api.HandleFunc("GET /api/v1/platform/model-market", s.handleGetPlatformModelMarket)
 }
 
 type platformGroupRequest struct {

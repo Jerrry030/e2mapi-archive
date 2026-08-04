@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -126,6 +127,60 @@ func TestPlatformGroupRateMultiplierAndBasePriceAutofill(t *testing.T) {
 	})
 	if rejected.Code != http.StatusBadRequest || !strings.Contains(rejected.Body.String(), "different base prices") {
 		t.Fatalf("mixed-price autofill must be rejected: %d %s", rejected.Code, rejected.Body.String())
+	}
+}
+
+func TestPlatformModelMarketShowsBestPriceWithoutOperationalDetail(t *testing.T) {
+	srv, _, authSvc := newTestServer(t)
+	srv.SetVault(vault.NewMemoryVault())
+	srv.EnableInsecureSupplyUpstreams()
+	handler := srv.Routes()
+	ctx := context.Background()
+
+	admin := createLoginUser(t, authSvc, "market-admin@example.com", contracts.UserRolePlatformAdmin)
+	client := createLoginUser(t, authSvc, "market-client@example.com", contracts.UserRoleOwner)
+	adminToken, _, _ := authSvc.Login(ctx, admin.Email, "password123")
+	clientToken, _, _ := authSvc.Login(ctx, client.Email, "password123")
+
+	groupResponse := doWithIdempotency(t, handler, http.MethodPost, "/api/v1/platform/groups", adminToken, "market-group", map[string]any{
+		"name": "market stable", "models": []string{"gpt-4o-mini"}, "status": "active", "resource_class": "stable",
+	})
+	var group contracts.UpstreamPool
+	if err := json.Unmarshal(groupResponse.Body.Bytes(), &group); err != nil || group.ID == "" {
+		t.Fatalf("decode group: %v %s", err, groupResponse.Body.String())
+	}
+	for index, price := range []int64{2000, 1000} {
+		upstream := doWithIdempotency(t, handler, http.MethodPost, "/api/v1/platform/upstreams", adminToken,
+			"market-upstream-"+strconv.Itoa(index), map[string]any{
+				"group_id": group.ID, "name": "market upstream " + strconv.Itoa(index),
+				"base_url": "http://mock-openai:8093/v1", "api_key": "market-secret-" + strconv.Itoa(index),
+				"models": []string{"gpt-4o-mini"},
+				"prices": map[string]any{"gpt-4o-mini": map[string]any{
+					"input_micros_per_million": price, "output_micros_per_million": price * 2,
+				}},
+				"capacity": map[string]any{"max_concurrency": 4, "max_request_micros": 1_000_000},
+				"status":   "active",
+			})
+		if upstream.Code != http.StatusCreated {
+			t.Fatalf("create upstream %d: %d %s", index, upstream.Code, upstream.Body.String())
+		}
+	}
+
+	market := do(t, handler, http.MethodGet, "/api/v1/platform/model-market", clientToken, nil)
+	if market.Code != http.StatusOK {
+		t.Fatalf("model market: %d %s", market.Code, market.Body.String())
+	}
+	body := market.Body.String()
+	if !strings.Contains(body, `"input_micros_per_million":1000`) || strings.Contains(body, `"input_micros_per_million":2000`) {
+		t.Fatalf("market must show the best price only: %s", body)
+	}
+	for _, forbidden := range []string{"market-secret", "base_url", "supplier", "mock-openai"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("market leaked operational detail %q: %s", forbidden, body)
+		}
+	}
+	if w := do(t, handler, http.MethodGet, "/api/v1/platform/model-market", "", nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("market requires a session, got %d", w.Code)
 	}
 }
 

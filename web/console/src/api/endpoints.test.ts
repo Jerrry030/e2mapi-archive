@@ -130,6 +130,15 @@ describe('administrator operation endpoints', () => {
     )
   })
 
+  it('reads the platform model market', async () => {
+    const fetchMock = mockResponse([])
+    await endpoints.getModelMarket()
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/platform/model-market',
+      expect.objectContaining({ method: 'GET' }),
+    )
+  })
+
   it('uses the redeem code routes', async () => {
     const fetchMock = mockResponse({ items: [], total: 0, page: 1, page_size: 20 })
 

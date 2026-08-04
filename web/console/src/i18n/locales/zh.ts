@@ -45,6 +45,7 @@ const zh = {
     recharge: '余额充值',
     redeem: '兑换码',
     redeemCodes: '兑换码管理',
+    platformModelMarket: '模型市场',
     accessManagement: '接入管理',
     managedInstances: '托管实例',
     serviceQualityRouting: '服务质量与路由',
@@ -591,6 +592,23 @@ const zh = {
     methodWxpay: '微信支付',
     methodHint: '可用方式以平台已配置的收款渠道为准；支付宝/微信经易支付聚合渠道。',
     submit: '去支付',
+  },
+  platformModelMarket: {
+    title: '模型市场',
+    intro: {
+      message: '按分组展示当前可购买模型与到手结算价',
+      description:
+        '价格为该分组内当前最优报价（CNY / 百万 token），结算以请求发起时的快照为准；在"平台分发"页为对应分组创建 Key 即可使用。',
+    },
+    empty: '平台暂未上架任何分组',
+    available: '可用',
+    unavailable: '暂不可用',
+    columns: {
+      model: '模型',
+      input: '输入价 / 百万 token',
+      output: '输出价 / 百万 token',
+      availability: '可用性',
+    },
   },
   redeem: {
     title: '兑换码',

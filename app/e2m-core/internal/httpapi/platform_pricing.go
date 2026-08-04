@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -105,6 +106,114 @@ func fillPricesFromBaseTable(endpoint *contracts.SupplyChannelEndpoint, models [
 	endpoint.InputSupplierMicrosPerMillion = 0
 	endpoint.OutputSupplierMicrosPerMillion = 0
 	return ""
+}
+
+type modelMarketPrice struct {
+	Model                  string `json:"model"`
+	Currency               string `json:"currency,omitempty"`
+	InputMicrosPerMillion  int64  `json:"input_micros_per_million,omitempty"`
+	OutputMicrosPerMillion int64  `json:"output_micros_per_million,omitempty"`
+	Available              bool   `json:"available"`
+}
+
+type modelMarketGroup struct {
+	GroupID       string                  `json:"group_id"`
+	GroupName     string                  `json:"group_name"`
+	Description   string                  `json:"description,omitempty"`
+	ResourceClass contracts.ResourceClass `json:"resource_class"`
+	Models        []modelMarketPrice      `json:"models"`
+}
+
+// handleGetPlatformModelMarket is the customer-facing price list: for every
+// active platform group, each sellable model with the best (lowest input)
+// current sell price across the group's active upstreams. It never exposes
+// upstream identity, supplier cost, capacity, or the multiplier itself — only
+// the resulting price a key in that group settles at.
+func (s *Server) handleGetPlatformModelMarket(w http.ResponseWriter, r *http.Request) {
+	setNoStore(w)
+	if !requirePlatformCustomer(w, r) {
+		return
+	}
+	pools, err := s.store.ListUpstreamPools(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	market := []modelMarketGroup{}
+	for _, pool := range pools {
+		if pool.DeliveryMode.Normalize() != contracts.UpstreamDeliverySupplyGateway || pool.Status != contracts.UpstreamPoolActive {
+			continue
+		}
+		channels, channelsErr := s.store.ListUpstreamChannels(r.Context(), pool.ID)
+		if channelsErr != nil {
+			writeError(w, http.StatusInternalServerError, "store_error", channelsErr.Error())
+			return
+		}
+		type endpointOffer struct {
+			endpoint contracts.SupplyChannelEndpoint
+			models   []string
+		}
+		offers := []endpointOffer{}
+		modelSet := map[string]bool{}
+		for _, model := range pool.Models {
+			modelSet[model] = true
+		}
+		for _, channel := range channels {
+			if channel.Status != contracts.UpstreamChannelActive || !channel.IsInventoryReady() {
+				continue
+			}
+			endpoint, endpointErr := s.store.GetSupplyChannelEndpoint(r.Context(), channel.ID)
+			if endpointErr != nil || !endpoint.Enabled || endpoint.CapacityPercent == 0 {
+				continue
+			}
+			offers = append(offers, endpointOffer{endpoint: endpoint, models: channel.Models})
+			if len(pool.Models) == 0 {
+				for _, model := range channel.Models {
+					modelSet[model] = true
+				}
+			}
+		}
+		models := make([]string, 0, len(modelSet))
+		for model := range modelSet {
+			models = append(models, model)
+		}
+		sort.Strings(models)
+		prices := make([]modelMarketPrice, 0, len(models))
+		for _, model := range models {
+			best := modelMarketPrice{Model: model}
+			for _, offer := range offers {
+				if !marketModelMatches(offer.models, model) {
+					continue
+				}
+				if !best.Available || offer.endpoint.InputPriceMicrosPerMillion < best.InputMicrosPerMillion {
+					best = modelMarketPrice{
+						Model: model, Currency: offer.endpoint.Currency, Available: true,
+						InputMicrosPerMillion:  offer.endpoint.InputPriceMicrosPerMillion,
+						OutputMicrosPerMillion: offer.endpoint.OutputPriceMicrosPerMillion,
+					}
+				}
+			}
+			prices = append(prices, best)
+		}
+		market = append(market, modelMarketGroup{
+			GroupID: pool.ID, GroupName: pool.Name, Description: pool.Description,
+			ResourceClass: pool.ResourceClass, Models: prices,
+		})
+	}
+	sort.Slice(market, func(i, j int) bool { return market[i].GroupName < market[j].GroupName })
+	writeJSON(w, http.StatusOK, market)
+}
+
+func marketModelMatches(models []string, target string) bool {
+	if len(models) == 0 {
+		return true
+	}
+	for _, model := range models {
+		if model == target {
+			return true
+		}
+	}
+	return false
 }
 
 // handleGetPlatformPricingPreview resolves a model's sell price from the base

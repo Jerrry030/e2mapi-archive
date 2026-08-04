@@ -45,6 +45,7 @@ const en = {
     recharge: 'Balance top-up',
     redeem: 'Redeem code',
     redeemCodes: 'Redeem codes',
+    platformModelMarket: 'Model market',
     accessManagement: 'Access management',
     managedInstances: 'Managed instances',
     serviceQualityRouting: 'Service quality & routing',
@@ -610,6 +611,23 @@ const en = {
     methodHint:
       'Available methods depend on the configured payment channels; Alipay/WeChat go through the EasyPay aggregator.',
     submit: 'Pay now',
+  },
+  platformModelMarket: {
+    title: 'Model market',
+    intro: {
+      message: 'Purchasable models and effective settlement prices by group',
+      description:
+        'Prices are the current best offer inside each group (CNY per million tokens); settlement uses the snapshot taken at request time. Create a key for the group on the platform distribution page to use it.',
+    },
+    empty: 'No groups are listed yet',
+    available: 'Available',
+    unavailable: 'Unavailable',
+    columns: {
+      model: 'Model',
+      input: 'Input / M tokens',
+      output: 'Output / M tokens',
+      availability: 'Availability',
+    },
   },
   redeem: {
     title: 'Redeem code',

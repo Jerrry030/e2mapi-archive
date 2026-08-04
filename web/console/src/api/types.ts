@@ -198,6 +198,22 @@ export interface CreateRechargeOrderInput {
   return_url?: string
 }
 
+export interface ModelMarketPrice {
+  model: string
+  currency?: string
+  input_micros_per_million?: number
+  output_micros_per_million?: number
+  available: boolean
+}
+
+export interface ModelMarketGroup {
+  group_id: string
+  group_name: string
+  description?: string
+  resource_class: string
+  models: ModelMarketPrice[]
+}
+
 export type RedeemCodeType = 'balance' | 'invitation'
 export type RedeemCodeStatus = 'unused' | 'used' | 'disabled' | 'expired'
 

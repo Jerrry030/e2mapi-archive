@@ -14,6 +14,7 @@ import Overview from './pages/Overview'
 import PaymentOrders from './pages/PaymentOrders'
 import PaymentResult from './pages/PaymentResult'
 import PlatformDistribution from './pages/PlatformDistribution'
+import PlatformModelMarket from './pages/PlatformModelMarket'
 import PoolHealth from './pages/PoolHealth'
 import Recharge from './pages/Recharge'
 import Redeem from './pages/Redeem'
@@ -42,6 +43,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Overview /> },
       { path: 'platform-distribution', element: rolePage(owners, <PlatformDistribution />) },
+      { path: 'model-market', element: rolePage(owners, <PlatformModelMarket />) },
       { path: 'instances', element: rolePage(owners, <Instances />) },
       { path: 'instances/:id/accounts', element: rolePage(owners, <InstanceAccounts />) },
       { path: 'connectors', element: rolePage(owners, <Connectors />) },

@@ -2,7 +2,9 @@ import { Link } from 'react-router'
 import { PageContainer, ProCard, StatisticCard } from '@ant-design/pro-components'
 import { Alert, Button, List, Space } from 'antd'
 import { useActiveRoleUser, useAudits, useConnectors, useInstances } from '../api/hooks'
+import { usePlatformUsage, usePlatformWallet } from '../api/platformDistributionHooks'
 import { currentUserId, getActiveRole } from '../api/auth'
+import { consoleFeatureFlags } from '../config/featureFlags'
 import { EmptyTeach, RelativeTime } from '../components/common'
 import { ActivityRiskTag } from '../components/tags'
 import { effectiveEventLevel } from '../eventLevel'
@@ -18,6 +20,9 @@ export default function Overview() {
   const instances = useInstances(scopedUserId, ownerRole)
   const connectors = useConnectors(scopedUserId, undefined, ownerRole)
   const audits = useAudits(scopedUserId, ownerRole)
+  const clientRole = role === 'client'
+  const wallet = usePlatformWallet(undefined, clientRole)
+  const usage = usePlatformUsage(undefined, clientRole)
 
   if (!ownerRole) {
     return (
@@ -38,6 +43,12 @@ export default function Overview() {
   const attention = connectorList.filter((item) => item.status !== 'online').length
   const instanceNames = new Map(instanceList.map((instance) => [instance.id, instance.name]))
   const recentAudits = (audits.data ?? []).slice(0, 8)
+  const usageItems = usage.data?.items ?? []
+  const todayStart = new Date()
+  todayStart.setHours(0, 0, 0, 0)
+  const todaySettledMicros = usageItems
+    .filter((item) => item.status === 'settled' && new Date(item.created_at) >= todayStart)
+    .reduce((sum, item) => sum + item.settled_micros, 0)
 
   return (
     <PageContainer
@@ -60,6 +71,46 @@ export default function Overview() {
           statistic={{ title: '需要处理', value: attention }}
         />
       </StatisticCard.Group>
+
+      {clientRole ? (
+        <ProCard title="平台消费" style={{ marginTop: 16 }}>
+          <StatisticCard.Group direction="row">
+            <StatisticCard
+              loading={wallet.isLoading}
+              statistic={{
+                title: '钱包余额（CNY）',
+                value: wallet.data ? (wallet.data.available_micros / 1_000_000).toFixed(2) : '--',
+              }}
+            />
+            <StatisticCard.Divider />
+            <StatisticCard
+              loading={usage.isLoading}
+              statistic={{
+                title: '今日结算消费（CNY）',
+                value: (todaySettledMicros / 1_000_000).toFixed(2),
+              }}
+            />
+          </StatisticCard.Group>
+          <Space wrap style={{ marginTop: 12 }}>
+            <Link to="/model-market">
+              <Button>查看模型市场</Button>
+            </Link>
+            <Link to="/platform-distribution">
+              <Button>管理 Key 与用量</Button>
+            </Link>
+            {consoleFeatureFlags.payments ? (
+              <>
+                <Link to="/recharge">
+                  <Button type="primary">余额充值</Button>
+                </Link>
+                <Link to="/redeem">
+                  <Button>使用兑换码</Button>
+                </Link>
+              </>
+            ) : null}
+          </Space>
+        </ProCard>
+      ) : null}
 
       {attention > 0 ? (
         <Alert

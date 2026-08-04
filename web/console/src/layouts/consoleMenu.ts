@@ -50,6 +50,13 @@ export const consoleMenu: MenuNode[] = [
     roles: ['admin', 'client'],
   },
   {
+    path: '/model-market',
+    name: '模型市场',
+    i18nKey: 'consoleMenu.platformModelMarket',
+    icon: 'platform',
+    roles: ['admin', 'client'],
+  },
+  {
     path: '/instances',
     name: '托管实例',
     i18nKey: 'consoleMenu.managedInstances',

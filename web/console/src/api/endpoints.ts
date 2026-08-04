@@ -37,6 +37,7 @@ import type {
   CreateRechargeOrderInput,
   GenerateRedeemCodesInput,
   GenerateRedeemCodesResponse,
+  ModelMarketGroup,
   RedeemCode,
   RedeemCodeListParams,
   RedeemCodePage,
@@ -184,6 +185,8 @@ export interface PlatformGroupInput {
   labels?: Record<string, string>
   status?: UpstreamPoolStatus
   resource_class: 'economy' | 'stable'
+  /** Sell-price multiplier over base-table prices, decimal string like "1.25". */
+  rate_multiplier?: string
 }
 
 export type PlatformGroupUpdateInput = Partial<PlatformGroupInput>
@@ -326,6 +329,7 @@ export const endpoints = {
     }),
   redeemCode: (code: string) =>
     apiClient.request<RedeemResponse>('/redeem', { method: 'POST', body: { code } }),
+  getModelMarket: () => apiClient.request<ModelMarketGroup[]>('/platform/model-market'),
   generateRedeemCodes: (body: GenerateRedeemCodesInput) =>
     apiClient.request<GenerateRedeemCodesResponse>('/admin/redeem-codes', { method: 'POST', body }),
   listRedeemCodes: (query: RedeemCodeListParams) =>

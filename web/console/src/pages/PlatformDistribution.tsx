@@ -107,12 +107,15 @@ export default function PlatformDistribution() {
   const openEditGroup = (group: PlatformGroup) => {
     setEditingGroupId(group.id)
     groupForm.resetFields()
+    const multiplierBps = Number(group.labels?.['e2m.rate_multiplier_bps'] ?? '')
     groupForm.setFieldsValue({
       ...group,
       models: (group.models ?? []).join(', '),
       labels: Object.entries(group.labels ?? {})
+        .filter(([key]) => key !== 'e2m.rate_multiplier_bps')
         .map(([key, value]) => `${key}=${value}`)
         .join(', '),
+      rate_multiplier: Number.isFinite(multiplierBps) && multiplierBps > 0 ? multiplierBps / 10000 : undefined,
     })
     setGroupOpen(true)
   }
@@ -639,6 +642,10 @@ export default function PlatformDistribution() {
                 .split(',')
                 .map((model) => model.trim())
                 .filter(Boolean),
+              rate_multiplier:
+                values.rate_multiplier != null && values.rate_multiplier !== ''
+                  ? String(values.rate_multiplier)
+                  : undefined,
             }
             if (editingGroupId) {
               await updateGroup.mutateAsync({ id: editingGroupId, input })
@@ -662,6 +669,13 @@ export default function PlatformDistribution() {
           </Form.Item>
           <Form.Item name="provider" label="供应商说明">
             <Input />
+          </Form.Item>
+          <Form.Item
+            name="rate_multiplier"
+            label="售价倍率"
+            extra="基于基准价目表的售价倍数（如 1.25）；留空保持 1。创建上游不填价格时按 基准价×汇率×倍率 自动定价。"
+          >
+            <InputNumber min={0.0001} max={100} step={0.05} style={{ width: '100%' }} placeholder="1" />
           </Form.Item>
           <Form.Item name="models" label="模型（逗号分隔）">
             <Input placeholder="gpt-4o-mini, claude-3-5-sonnet" />
