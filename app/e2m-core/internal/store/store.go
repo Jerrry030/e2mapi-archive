@@ -72,6 +72,9 @@ type Store interface {
 	// Wallet and virtual keys. All monetary mutations are expressed through
 	// atomic, balanced journal operations; callers cannot set a balance.
 	GetWallet(ctx context.Context, userID int64, currency string) (contracts.Wallet, error)
+	// ListWalletsBelow returns wallets whose available balance is under the
+	// threshold, for the low-balance alert worker.
+	ListWalletsBelow(ctx context.Context, currency string, thresholdMicros int64) ([]contracts.Wallet, error)
 	ListWalletJournals(ctx context.Context, userID int64, limit int) ([]contracts.WalletJournal, error)
 	AdjustWalletBalance(ctx context.Context, userID int64, currency string, deltaMicros int64, idempotencyKey, note string) (contracts.Wallet, contracts.WalletJournal, error)
 	CreateVirtualKey(ctx context.Context, input contracts.VirtualKey) (contracts.VirtualKey, error)

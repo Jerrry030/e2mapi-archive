@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -36,12 +37,35 @@ type Config struct {
 	SettleTimeout time.Duration
 }
 
+// Channel labels configuring per-upstream data-plane behavior. Both are
+// operator-set through the platform upstream labels field.
+//
+//	e2m.model_mapping        {"requested-model":"upstream-model", ...}
+//	e2m.error_cooldown_rules [{"status":429,"keywords":["quota"],"cooldown_seconds":600}, ...]
+const (
+	modelMappingLabel       = "e2m.model_mapping"
+	errorCooldownRulesLabel = "e2m.error_cooldown_rules"
+)
+
+type errorCooldownRule struct {
+	Status          int      `json:"status"`
+	Keywords        []string `json:"keywords,omitempty"`
+	CooldownSeconds int      `json:"cooldown_seconds"`
+}
+
 type Handler struct {
 	store         Store
 	vault         vault.Vault
 	client        *http.Client
 	currency      string
 	settleTimeout time.Duration
+
+	// cooldowns parks channels whose upstream errors matched an operator
+	// cooldown rule. In-process state: a restart clears it, and multi-node
+	// deployments cool per node. That is deliberate — durable circuit state
+	// belongs to the parked quality-circuit subsystem.
+	cooldownMu sync.Mutex
+	cooldowns  map[string]time.Time
 }
 
 func New(st Store, secrets vault.Vault, cfg Config) (*Handler, error) {
@@ -57,7 +81,98 @@ func New(st Store, secrets vault.Vault, cfg Config) (*Handler, error) {
 	if settleTimeout <= 0 {
 		settleTimeout = 10 * time.Second
 	}
-	return &Handler{store: st, vault: secrets, client: client, currency: currency, settleTimeout: settleTimeout}, nil
+	return &Handler{store: st, vault: secrets, client: client, currency: currency,
+		settleTimeout: settleTimeout, cooldowns: map[string]time.Time{}}, nil
+}
+
+// activeCooldowns prunes expired entries and returns the channels currently
+// parked by an error cooldown rule.
+func (h *Handler) activeCooldowns() []string {
+	h.cooldownMu.Lock()
+	defer h.cooldownMu.Unlock()
+	now := time.Now()
+	out := make([]string, 0, len(h.cooldowns))
+	for channelID, until := range h.cooldowns {
+		if until.Before(now) {
+			delete(h.cooldowns, channelID)
+			continue
+		}
+		out = append(out, channelID)
+	}
+	return out
+}
+
+// applyCooldownRules parks the channel when the upstream failure matches one
+// of the channel's operator-authored rules: same HTTP status, plus (when the
+// rule lists keywords) any case-insensitive keyword found in the response
+// snippet.
+func (h *Handler) applyCooldownRules(channel contracts.UpstreamChannel, status int, snippet []byte) {
+	raw := strings.TrimSpace(channel.Labels[errorCooldownRulesLabel])
+	if raw == "" || status <= 0 {
+		return
+	}
+	var rules []errorCooldownRule
+	if err := json.Unmarshal([]byte(raw), &rules); err != nil {
+		return
+	}
+	lowered := strings.ToLower(string(snippet))
+	for _, rule := range rules {
+		if rule.Status != status || rule.CooldownSeconds <= 0 {
+			continue
+		}
+		matched := len(rule.Keywords) == 0
+		for _, keyword := range rule.Keywords {
+			if keyword = strings.ToLower(strings.TrimSpace(keyword)); keyword != "" && strings.Contains(lowered, keyword) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		cooldown := time.Duration(rule.CooldownSeconds) * time.Second
+		if cooldown > 24*time.Hour {
+			cooldown = 24 * time.Hour
+		}
+		h.cooldownMu.Lock()
+		h.cooldowns[channel.ID] = time.Now().Add(cooldown)
+		h.cooldownMu.Unlock()
+		log.Printf("supply-gateway: channel %s parked for %s by cooldown rule (status %d)", channel.ID, cooldown, status)
+		return
+	}
+}
+
+// mappedUpstreamModel resolves the channel's model rename for the requested
+// model; empty means "send the requested model unchanged".
+func mappedUpstreamModel(channel contracts.UpstreamChannel, requestedModel string) string {
+	raw := strings.TrimSpace(channel.Labels[modelMappingLabel])
+	if raw == "" {
+		return ""
+	}
+	var mapping map[string]string
+	if err := json.Unmarshal([]byte(raw), &mapping); err != nil {
+		return ""
+	}
+	mapped := strings.TrimSpace(mapping[requestedModel])
+	if mapped == requestedModel {
+		return ""
+	}
+	return mapped
+}
+
+// withModel rewrites the request body's model field for channels that rename
+// models upstream.
+func withModel(body []byte, model string) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	rawModel, err := json.Marshal(model)
+	if err != nil {
+		return nil, err
+	}
+	payload["model"] = rawModel
+	return json.Marshal(payload)
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -114,6 +229,13 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("X-E2M-Request-ID", requestID)
 	excludedChannelIDs := make([]string, 0)
 	excluded := make(map[string]struct{})
+	// Channels parked by an operator cooldown rule sit out candidate
+	// selection entirely for the duration of their cooldown.
+	for _, cooled := range h.activeCooldowns() {
+		excluded[cooled] = struct{}{}
+		excludedChannelIDs = append(excludedChannelIDs, cooled)
+	}
+	initialExclusions := len(excludedChannelIDs)
 	for attempt := 0; ; attempt++ {
 		attemptRequestID := requestID
 		if attempt > 0 {
@@ -124,7 +246,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		}
 		reserved, reserveErr := h.store.ReserveSupplyRequest(r.Context(), contracts.HashVirtualKey(token), attemptRequestID, strings.TrimSpace(input.Model), h.currency, excludedChannelIDs)
 		if reserveErr != nil {
-			if len(excludedChannelIDs) == 0 {
+			if len(excludedChannelIDs) == initialExclusions && !(errors.Is(reserveErr, store.ErrNoSupply) && initialExclusions > 0) {
 				h.writeStoreError(w, reserveErr)
 			} else {
 				writeUpstreamsExhausted(w)
@@ -146,8 +268,10 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		response, failureReason := h.callUpstream(r, body, requestID, reserved)
 		if failureReason != "" {
 			if response != nil {
+				snippet, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
 				_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 				_ = response.Body.Close()
+				h.applyCooldownRules(reserved.Candidate.Channel, response.StatusCode, snippet)
 			}
 			if err := finish.release(failureReason); err != nil {
 				writeError(w, http.StatusServiceUnavailable, "accounting_unavailable", "failed upstream reservation could not be released")
@@ -188,6 +312,13 @@ func (h *Handler) callUpstream(r *http.Request, body []byte, requestID string, r
 	upstreamURL, err := chatCompletionURL(reserved.Candidate.Endpoint.BaseURL, reserved.Candidate.Endpoint.AllowInsecure)
 	if err != nil {
 		return nil, "endpoint_invalid"
+	}
+	if mapped := mappedUpstreamModel(reserved.Candidate.Channel, strings.TrimSpace(reserved.Usage.Model)); mapped != "" {
+		rewritten, rewriteErr := withModel(body, mapped)
+		if rewriteErr != nil {
+			return nil, "request_build_failed"
+		}
+		body = rewritten
 	}
 	upstreamRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {

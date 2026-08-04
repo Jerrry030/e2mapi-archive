@@ -88,6 +88,26 @@ func copyHybridAllocation(input contracts.HybridAllocation) contracts.HybridAllo
 	return out
 }
 
+func (s *MemoryStore) ListWalletsBelow(ctx context.Context, currency string, thresholdMicros int64) ([]contracts.Wallet, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if !validCurrency(currency) || thresholdMicros <= 0 {
+		return nil, ErrInvalid
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := []contracts.Wallet{}
+	for _, wallet := range s.wallets {
+		if wallet.Currency == currency && wallet.AvailableMicros < thresholdMicros {
+			out = append(out, wallet)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UserID < out[j].UserID })
+	return out, nil
+}
+
 func (s *MemoryStore) GetWallet(ctx context.Context, userID int64, currency string) (contracts.Wallet, error) {
 	if err := ctx.Err(); err != nil {
 		return contracts.Wallet{}, err

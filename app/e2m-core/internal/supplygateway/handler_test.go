@@ -329,6 +329,83 @@ func TestGatewayDoesNotFailOverWhenReservationReleaseFails(t *testing.T) {
 	}
 }
 
+func TestGatewayModelMappingRewritesUpstreamModel(t *testing.T) {
+	var receivedModel string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		receivedModel = payload.Model
+		_, _ = w.Write([]byte(`{"id":"x","usage":{"prompt_tokens":1,"completion_tokens":2}}`))
+	}))
+	defer upstream.Close()
+	h, fake := newGatewayForTest(t, upstream)
+	fake.reservation.Candidate.Channel.Labels = map[string]string{
+		modelMappingLabel: `{"gpt-test":"upstream-real-model"}`,
+	}
+	fake.reservation.Usage = contracts.SupplyUsageRecord{Model: "gpt-test"}
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test"}`))
+	r.Header.Set("Authorization", "Bearer e2m_v1_key")
+	h.Routes().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("mapped request failed: %d %s (release reasons %v)", w.Code, w.Body.String(), fake.releasedReason)
+	}
+	if receivedModel != "upstream-real-model" {
+		t.Fatalf("upstream must receive the mapped model, got %q", receivedModel)
+	}
+}
+
+func TestGatewayErrorCooldownRuleParksChannel(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"quota exceeded for this key"}}`))
+	}))
+	defer upstream.Close()
+	h, fake := newGatewayForTest(t, upstream)
+	fake.reservation.Candidate.Channel.Labels = map[string]string{
+		errorCooldownRulesLabel: `[{"status":429,"keywords":["quota"],"cooldown_seconds":300}]`,
+	}
+	fake.reservation.Usage = contracts.SupplyUsageRecord{Model: "gpt-test"}
+
+	send := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test"}`))
+		r.Header.Set("Authorization", "Bearer e2m_v1_key")
+		h.Routes().ServeHTTP(w, r)
+		return w
+	}
+
+	if w := send(); w.Code != http.StatusBadGateway {
+		t.Fatalf("429 with retry must exhaust candidates, got %d %s", w.Code, w.Body.String())
+	}
+	if cooled := h.activeCooldowns(); len(cooled) != 1 || cooled[0] != "channel-1" {
+		t.Fatalf("channel must be parked by the cooldown rule, got %v", cooled)
+	}
+
+	// The next request must exclude the parked channel from its very first
+	// reservation attempt.
+	before := len(fake.reserveExclusions)
+	_ = send()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.reserveExclusions) <= before {
+		t.Fatalf("second request made no reservation attempt")
+	}
+	first := fake.reserveExclusions[before]
+	found := false
+	for _, id := range first {
+		if id == "channel-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("first reservation of the next request must exclude the cooled channel, got %v", first)
+	}
+}
+
 func TestChatCompletionURLRequiresExplicitHTTPOptIn(t *testing.T) {
 	if _, err := chatCompletionURL("http://upstream.test/v1", false); err == nil {
 		t.Fatal("plain HTTP accepted without explicit opt-in")

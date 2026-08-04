@@ -81,6 +81,28 @@ func scanHybridWallet(row rowScanner) (contracts.Wallet, error) {
 	return wallet, err
 }
 
+func (s *PostgresStore) ListWalletsBelow(ctx context.Context, currency string, thresholdMicros int64) ([]contracts.Wallet, error) {
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if !validCurrency(currency) || thresholdMicros <= 0 {
+		return nil, ErrInvalid
+	}
+	rows, err := s.pool.Query(ctx, `SELECT user_id,currency,available_micros,reserved_micros,version,updated_at
+		FROM wallet_accounts WHERE currency=$1 AND available_micros < $2 ORDER BY user_id`, currency, thresholdMicros)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []contracts.Wallet{}
+	for rows.Next() {
+		wallet, scanErr := scanHybridWallet(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, wallet)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) GetWallet(ctx context.Context, userID int64, currency string) (contracts.Wallet, error) {
 	currency = strings.ToUpper(strings.TrimSpace(currency))
 	if userID <= 0 || !validCurrency(currency) {

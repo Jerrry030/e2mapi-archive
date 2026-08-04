@@ -34,6 +34,7 @@ import (
 	"e2m.local/core/internal/store"
 	"e2m.local/core/internal/supplygateway"
 	"e2m.local/core/internal/vault"
+	"e2m.local/core/internal/walletalert"
 )
 
 const coreShutdownTimeout = 75 * time.Second
@@ -131,7 +132,17 @@ func run() error {
 	if getenv("E2M_ENABLE_PAYMENTS", "") == "true" {
 		paymentExpiryWorker = paymentexpiry.New(st, v, paymentExpiryInterval()).Run
 	}
-	workers := buildCoreWorkers(checker.Run, notifyWorker.Run, retirementWorker, paymentExpiryWorker)
+	// Low-balance alerts stay off until an explicit threshold is configured.
+	var walletAlertWorker coreWorker
+	if raw := strings.TrimSpace(os.Getenv("E2M_PLATFORM_BALANCE_THRESHOLD")); raw != "" {
+		threshold, thresholdErr := strconv.ParseFloat(raw, 64)
+		if thresholdErr != nil || threshold <= 0 {
+			return fmt.Errorf("e2m-core: E2M_PLATFORM_BALANCE_THRESHOLD must be a positive decimal, got %q", raw)
+		}
+		walletAlertWorker = walletalert.New(st, router, getenv("E2M_SUPPLY_CURRENCY", "CNY"),
+			int64(threshold*1_000_000)).Run
+	}
+	workers := buildCoreWorkers(checker.Run, notifyWorker.Run, retirementWorker, paymentExpiryWorker, walletAlertWorker)
 	server := httpapi.NewServer(st, orch, checker, nil, nil, authSvc, events, publisher)
 	server.SetVault(v)
 	server.SetDeliveryKeyVerifier(keyVerifier)

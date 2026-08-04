@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   Col,
+  DatePicker,
   Form,
   Input,
   InputNumber,
@@ -861,10 +862,12 @@ export default function PlatformDistribution() {
           form={keyForm}
           layout="vertical"
           onFinish={async (values) => {
+            const expiresAt = (values as { expires_at?: { toDate?: () => Date } }).expires_at
             const result = await createKey.mutateAsync({
               ...values,
               user_id: targetUserId,
               daily_limit_micros: Math.round((values.daily_limit_micros ?? 0) * 1_000_000),
+              expires_at: expiresAt?.toDate ? expiresAt.toDate().toISOString() : undefined,
             })
             setVisibleKeyValues((current) => ({
               ...current,
@@ -887,6 +890,9 @@ export default function PlatformDistribution() {
           </Form.Item>
           <Form.Item name="daily_limit_micros" label="每日额度（元）">
             <InputNumber min={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="expires_at" label="有效期至" extra="留空表示长期有效；到期后 Key 自动失效。">
+            <DatePicker showTime style={{ width: '100%' }} />
           </Form.Item>
         </Form>
       </Modal>
