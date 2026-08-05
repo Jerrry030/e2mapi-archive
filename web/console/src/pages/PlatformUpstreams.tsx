@@ -4,24 +4,25 @@ import {
   Alert,
   App,
   Button,
-  Divider,
   Form,
   Input,
   InputNumber,
   Modal,
   Popconfirm,
   Select,
+  Segmented,
   Space,
   Table,
-  Tabs,
   Tag,
   Typography,
 } from 'antd'
 import {
+  CheckCircleOutlined,
   EditOutlined,
   MinusCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SwapOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import {
@@ -33,7 +34,7 @@ import {
   useUpdatePlatformUpstream,
 } from '../api/platformDistributionHooks'
 import type { PlatformUpstream } from '../api/types'
-import ModelSelect from '../components/ModelSelect'
+import ModelWhitelistPanel from '../components/ModelWhitelistPanel'
 import {
   COOLDOWN_RULES_LABEL,
   MODEL_MAPPING_LABEL,
@@ -44,6 +45,21 @@ import {
 } from './upstreamLabels'
 import { t } from '../i18n'
 import { useLocaleVersion } from '../i18n/react'
+
+function Section({ title, desc }: { title: string; desc?: string }) {
+  return (
+    <div style={{ margin: '20px 0 12px' }}>
+      <Typography.Text strong style={{ fontSize: 15 }}>
+        {title}
+      </Typography.Text>
+      {desc ? (
+        <Typography.Paragraph type="secondary" style={{ margin: '4px 0 0', fontSize: 12 }}>
+          {desc}
+        </Typography.Paragraph>
+      ) : null}
+    </div>
+  )
+}
 
 export default function PlatformUpstreams() {
   useLocaleVersion()
@@ -103,8 +119,14 @@ export default function PlatformUpstreams() {
       base_url: upstream.base_url,
       api_key: undefined,
       models: [...(upstream.models ?? [])],
-      input_price: firstPrice ? firstPrice.input_micros_per_million / 1_000_000 : 0,
-      output_price: firstPrice ? firstPrice.output_micros_per_million / 1_000_000 : 0,
+      input_price:
+        firstPrice && firstPrice.input_micros_per_million > 0
+          ? firstPrice.input_micros_per_million / 1_000_000
+          : undefined,
+      output_price:
+        firstPrice && firstPrice.output_micros_per_million > 0
+          ? firstPrice.output_micros_per_million / 1_000_000
+          : undefined,
       priority: upstream.priority,
       weight: upstream.weight,
       max_concurrency: upstream.capacity?.max_concurrency,
@@ -281,7 +303,7 @@ export default function PlatformUpstreams() {
         onCancel={close}
         confirmLoading={createUpstream.isPending || updateUpstream.isPending}
         onOk={() => form.submit()}
-        width={640}
+        width={720}
       >
         <Form
           form={form}
@@ -291,22 +313,34 @@ export default function PlatformUpstreams() {
             const models = ((values.models ?? []) as string[])
               .map((model) => model.trim())
               .filter(Boolean)
-            const prices = Object.fromEntries(
-              models.map((model) => [
-                model,
-                {
-                  input_micros_per_million: Math.round((values.input_price || 0) * 1_000_000),
-                  output_micros_per_million: Math.round((values.output_price || 0) * 1_000_000),
-                },
-              ]),
-            )
+            const hasInputPrice = values.input_price != null && values.input_price > 0
+            const hasOutputPrice = values.output_price != null && values.output_price > 0
+            if (hasInputPrice !== hasOutputPrice) {
+              message.error(
+                t('platformUpstreams.form.priceBothOrNone', '输入价与输出价需同时填写，或同时留空走自动定价'),
+              )
+              return
+            }
+            // Omitted prices mean: base-table auto pricing on create, keep the
+            // current prices on edit. The backend enforces both semantics.
+            const prices = hasInputPrice
+              ? Object.fromEntries(
+                  models.map((model) => [
+                    model,
+                    {
+                      input_micros_per_million: Math.round((values.input_price ?? 0) * 1_000_000),
+                      output_micros_per_million: Math.round((values.output_price ?? 0) * 1_000_000),
+                    },
+                  ]),
+                )
+              : undefined
             const input = {
               group_id: values.group_id,
               name: values.name,
               base_url: values.base_url,
               ...(values.api_key ? { api_key: values.api_key } : {}),
               models,
-              prices,
+              ...(prices ? { prices } : {}),
               priority: values.priority,
               weight: values.weight,
               status: values.status,
@@ -372,146 +406,153 @@ export default function PlatformUpstreams() {
           >
             <Input.Password autoComplete="new-password" />
           </Form.Item>
-          <Divider orientation="left" plain>
-            {t('platformUpstreams.form.modelSection', '模型配置')}
-          </Divider>
-          <Tabs
-            activeKey={modelTab}
+          <Section
+            title={t('platformUpstreams.form.modelSection', '模型限制')}
+            desc={t(
+              'platformUpstreams.form.modelSectionDesc',
+              '白名单声明该上游可承接的模型；映射把请求模型改写为上游实际模型。',
+            )}
+          />
+          <Segmented
+            block
+            value={modelTab}
             onChange={(key) => setModelTab(key as 'whitelist' | 'mapping')}
-            items={[
+            options={[
               {
-                key: 'whitelist',
                 label: t('platformUpstreams.form.whitelistTab', '模型白名单'),
-                children: (
-                  <>
-                    <Form.Item
-                      name="models"
-                      rules={[
-                        {
-                          required: true,
-                          message: t('platformUpstreams.form.modelsRequired', '至少选择一个模型'),
-                        },
-                      ]}
-                      extra={t(
-                        'platformUpstreams.form.whitelistHint',
-                        '该上游可承接的模型；下游请求的模型不在其中时不会调度到这里。可直接输入自定义名称后回车。',
-                      )}
-                    >
-                      <ModelSelect
-                        candidates={selectedGroupModels}
-                        placeholder={t('platformUpstreams.form.modelsPlaceholder', '选择或输入模型名')}
-                      />
-                    </Form.Item>
-                    <Space wrap>
-                      <Button
-                        size="small"
-                        onClick={fillFromGroup}
-                        disabled={!selectedGroupModels.length}
-                      >
-                        {t('platformUpstreams.form.fillFromGroup', '同步分组模型')}
-                      </Button>
-                      <Button
-                        size="small"
-                        icon={<ThunderboltOutlined />}
-                        loading={testUpstream.isPending}
-                        disabled={!editingId}
-                        onClick={() => void testAndLoadModels()}
-                      >
-                        {t('platformUpstreams.form.syncUpstream', '同步上游支持的模型')}
-                      </Button>
-                      <Button size="small" danger onClick={() => form.setFieldValue('models', [])}>
-                        {t('platformUpstreams.form.clearModels', '清除所有模型')}
-                      </Button>
-                    </Space>
-                    {!editingId ? (
-                      <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-                        {t(
-                          'platformUpstreams.form.syncAfterSave',
-                          '「同步上游支持的模型」需要先保存上游（凭证入库后才能连接上游查询）。',
-                        )}
-                      </Typography.Paragraph>
-                    ) : null}
-                  </>
-                ),
+                value: 'whitelist',
+                icon: <CheckCircleOutlined />,
               },
               {
-                key: 'mapping',
                 label: t('platformUpstreams.form.mappingTab', '模型映射'),
-                children: (
-                  <>
-                    <Typography.Paragraph type="secondary">
-                      {t(
-                        'platformUpstreams.form.mappingHint',
-                        '把下游请求的模型名改写为该上游实际支持的模型名；不填表示原样透传。',
-                      )}
-                    </Typography.Paragraph>
-                    <Form.List name="model_mapping">
-                      {(fields, { add, remove }) => (
-                        <>
-                          {fields.map((field) => (
-                            <Space
-                              key={field.key}
-                              align="baseline"
-                              style={{ display: 'flex', marginBottom: 8 }}
-                            >
-                              <Form.Item
-                                name={[field.name, 'from']}
-                                noStyle
-                                rules={[
-                                  {
-                                    required: true,
-                                    message: t('platformUpstreams.form.mappingFromRequired', '请填写请求模型'),
-                                  },
-                                ]}
-                              >
-                                <Input
-                                  style={{ width: 220 }}
-                                  placeholder={t('platformUpstreams.form.mappingFrom', '请求模型')}
-                                />
-                              </Form.Item>
-                              <span>→</span>
-                              <Form.Item
-                                name={[field.name, 'to']}
-                                noStyle
-                                rules={[
-                                  {
-                                    required: true,
-                                    message: t('platformUpstreams.form.mappingToRequired', '请填写上游模型'),
-                                  },
-                                ]}
-                              >
-                                <Input
-                                  style={{ width: 220 }}
-                                  placeholder={t('platformUpstreams.form.mappingTo', '上游实际模型')}
-                                />
-                              </Form.Item>
-                              <Button
-                                type="text"
-                                danger
-                                icon={<MinusCircleOutlined />}
-                                onClick={() => remove(field.name)}
-                              />
-                            </Space>
-                          ))}
-                          <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()}>
-                            {t('platformUpstreams.form.mappingAdd', '添加映射')}
-                          </Button>
-                        </>
-                      )}
-                    </Form.List>
-                  </>
-                ),
+                value: 'mapping',
+                icon: <SwapOutlined />,
               },
             ]}
+            style={{ marginBottom: 16 }}
+          />
+          <div style={{ display: modelTab === 'whitelist' ? 'block' : 'none' }}>
+            <Form.Item
+              name="models"
+              rules={[
+                {
+                  required: true,
+                  message: t('platformUpstreams.form.modelsRequired', '至少选择一个模型'),
+                },
+              ]}
+            >
+              <ModelWhitelistPanel
+                actions={
+                  <Space wrap>
+                    <Button size="small" onClick={fillFromGroup} disabled={!selectedGroupModels.length}>
+                      {t('platformUpstreams.form.fillFromGroup', '同步分组模型')}
+                    </Button>
+                    <Button
+                      size="small"
+                      icon={<ThunderboltOutlined />}
+                      loading={testUpstream.isPending}
+                      disabled={!editingId}
+                      title={
+                        !editingId
+                          ? t(
+                              'platformUpstreams.form.syncAfterSave',
+                              '「同步上游支持的模型」需要先保存上游（凭证入库后才能连接上游查询）。',
+                            )
+                          : undefined
+                      }
+                      onClick={() => void testAndLoadModels()}
+                    >
+                      {t('platformUpstreams.form.syncUpstream', '同步上游支持的模型')}
+                    </Button>
+                    <Button size="small" danger onClick={() => form.setFieldValue('models', [])}>
+                      {t('platformUpstreams.form.clearModels', '清除所有模型')}
+                    </Button>
+                  </Space>
+                }
+              />
+            </Form.Item>
+          </div>
+          <div style={{ display: modelTab === 'mapping' ? 'block' : 'none' }}>
+            <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+              {t(
+                'platformUpstreams.form.mappingHint',
+                '把下游请求的模型名改写为该上游实际支持的模型名；不填表示原样透传。',
+              )}
+            </Typography.Paragraph>
+            <Form.List name="model_mapping">
+              {(fields, { add, remove }) => (
+                <>
+                  {fields.map((field) => (
+                    <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
+                      <Form.Item
+                        name={[field.name, 'from']}
+                        noStyle
+                        rules={[
+                          {
+                            required: true,
+                            message: t('platformUpstreams.form.mappingFromRequired', '请填写请求模型'),
+                          },
+                        ]}
+                      >
+                        <Input
+                          style={{ width: 250 }}
+                          placeholder={t('platformUpstreams.form.mappingFrom', '请求模型')}
+                        />
+                      </Form.Item>
+                      <SwapOutlined style={{ color: '#999' }} />
+                      <Form.Item
+                        name={[field.name, 'to']}
+                        noStyle
+                        rules={[
+                          {
+                            required: true,
+                            message: t('platformUpstreams.form.mappingToRequired', '请填写上游模型'),
+                          },
+                        ]}
+                      >
+                        <Input
+                          style={{ width: 250 }}
+                          placeholder={t('platformUpstreams.form.mappingTo', '上游实际模型')}
+                        />
+                      </Form.Item>
+                      <Button
+                        type="text"
+                        danger
+                        icon={<MinusCircleOutlined />}
+                        onClick={() => remove(field.name)}
+                      />
+                    </Space>
+                  ))}
+                  <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()}>
+                    {t('platformUpstreams.form.mappingAdd', '添加映射')}
+                  </Button>
+                </>
+              )}
+            </Form.List>
+          </div>
+          <Section
+            title={t('platformUpstreams.form.priceSection', '价格（可选覆盖）')}
+            desc={
+              editingId
+                ? t(
+                    'platformUpstreams.form.priceSectionDescEdit',
+                    '留空保持当前价格；填写则覆盖。自动定价 = 基准价 × 汇率 × 分组倍率。',
+                  )
+                : t(
+                    'platformUpstreams.form.priceSectionDescNew',
+                    '留空时按基准价目表自动定价（基准价 × 汇率 × 分组倍率）；填写则以此为准。',
+                  )
+            }
           />
           <Space>
-            <Form.Item name="input_price" label={t('platformUpstreams.form.inputPrice', '输入价（元/百万 Token）')} rules={[{ required: true }]}>
-              <InputNumber min={0} />
+            <Form.Item name="input_price" label={t('platformUpstreams.form.inputPrice', '输入价（元/百万 Token）')}>
+              <InputNumber min={0} placeholder={t('platformUpstreams.form.priceAuto', '自动')} style={{ width: 180 }} />
             </Form.Item>
-            <Form.Item name="output_price" label={t('platformUpstreams.form.outputPrice', '输出价（元/百万 Token）')} rules={[{ required: true }]}>
-              <InputNumber min={0} />
+            <Form.Item name="output_price" label={t('platformUpstreams.form.outputPrice', '输出价（元/百万 Token）')}>
+              <InputNumber min={0} placeholder={t('platformUpstreams.form.priceAuto', '自动')} style={{ width: 180 }} />
             </Form.Item>
           </Space>
+          <Section title={t('platformUpstreams.form.schedulingSection', '调度')} />
           <Space wrap>
             <Form.Item name="priority" label={t('platformUpstreams.form.priority', '优先级')}>
               <InputNumber min={0} precision={0} />
@@ -539,15 +580,13 @@ export default function PlatformUpstreams() {
               />
             </Form.Item>
           ) : null}
-          <Divider orientation="left" plain style={{ marginTop: 24 }}>
-            {t('platformUpstreams.form.cooldownTitle', '错误冷却规则（可选）')}
-          </Divider>
-          <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-            {t(
+          <Section
+            title={t('platformUpstreams.form.cooldownTitle', '错误冷却规则（可选）')}
+            desc={t(
               'platformUpstreams.form.cooldownHint',
               '命中的错误会让该上游临时退出调度，冷却期内新请求自动避开。关键词留空表示只匹配状态码。',
             )}
-          </Typography.Paragraph>
+          />
           <Form.List name="cooldown_rules">
             {(fields, { add, remove }) => (
               <>
@@ -600,9 +639,7 @@ export default function PlatformUpstreams() {
             )}
           </Form.List>
 
-          <Divider orientation="left" plain style={{ marginTop: 24 }}>
-            {t('platformUpstreams.form.advanced', '其他')}
-          </Divider>
+          <Section title={t('platformUpstreams.form.advanced', '其他')} />
           <Form.Item name="labels" label={t('platformUpstreams.form.labels', '标签（key=value，逗号分隔）')}>
             <Input placeholder="region=cn, lane=primary" />
           </Form.Item>

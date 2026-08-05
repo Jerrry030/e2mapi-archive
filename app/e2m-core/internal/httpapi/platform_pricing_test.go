@@ -184,6 +184,36 @@ func TestPlatformModelMarketShowsBestPriceWithoutOperationalDetail(t *testing.T)
 	}
 }
 
+func TestUpstreamCreateWithoutPricesFailsClosedWhenPricingDisabled(t *testing.T) {
+	srv, _, authSvc := newTestServer(t)
+	srv.SetVault(vault.NewMemoryVault())
+	srv.EnableInsecureSupplyUpstreams()
+	handler := srv.Routes()
+	ctx := context.Background()
+
+	admin := createLoginUser(t, authSvc, "freeguard-admin@example.com", contracts.UserRolePlatformAdmin)
+	adminToken, _, _ := authSvc.Login(ctx, admin.Email, "password123")
+	groupResponse := doWithIdempotency(t, handler, http.MethodPost, "/api/v1/platform/groups", adminToken, "freeguard-group", map[string]any{
+		"name": "无价保护", "models": []string{"gpt-4o-mini"}, "status": "active",
+	})
+	var group contracts.UpstreamPool
+	if err := json.Unmarshal(groupResponse.Body.Bytes(), &group); err != nil || group.ID == "" {
+		t.Fatalf("decode group: %v", err)
+	}
+
+	// No pricing service configured and no explicit prices: creating the
+	// upstream must fail instead of silently minting a zero-priced (free) one.
+	rejected := doWithIdempotency(t, handler, http.MethodPost, "/api/v1/platform/upstreams", adminToken, "freeguard-upstream", map[string]any{
+		"group_id": group.ID, "name": "无价上游", "base_url": "http://mock-openai:8093/v1",
+		"api_key": "freeguard-secret", "models": []string{"gpt-4o-mini"},
+		"capacity": map[string]any{"max_concurrency": 4, "max_request_micros": 1_000_000},
+		"status":   "active",
+	})
+	if rejected.Code != http.StatusBadRequest || !strings.Contains(rejected.Body.String(), "prices are required") {
+		t.Fatalf("price-less create without pricing must 400, got %d %s", rejected.Code, rejected.Body.String())
+	}
+}
+
 func TestPricingPreviewDisabledWithoutService(t *testing.T) {
 	srv, _, authSvc := newTestServer(t)
 	handler := srv.Routes()

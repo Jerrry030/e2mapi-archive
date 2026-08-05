@@ -821,12 +821,16 @@ func (s *Server) platformUpstreamRecords(input platformUpstreamRequest, group co
 		if price.OutputSupplierMicrosPerMillion != nil {
 			endpoint.OutputSupplierMicrosPerMillion = *price.OutputSupplierMicrosPerMillion
 		}
-	} else if currentEndpoint == nil && s.pricing.Enabled() {
+	} else if currentEndpoint == nil {
 		// Explicit prices always win; on create without prices the sell price
 		// is materialized from the base table at the group's rate multiplier.
 		// V1 keeps one price per upstream, so every model must resolve to the
 		// same converted price — otherwise the operator has to price by hand
-		// (or split the upstream by model family).
+		// (or split the upstream by model family). Without base-table pricing
+		// an omitted price must fail rather than create a free upstream.
+		if !s.pricing.Enabled() {
+			return channel, endpoint, "prices are required: base price table pricing is not configured (set the USD→CNY rate under system settings → commerce)"
+		}
 		if msg := fillPricesFromBaseTable(&endpoint, channel.Models, s.pricing, poolRateMultiplierBps(group)); msg != "" {
 			return channel, endpoint, msg
 		}
