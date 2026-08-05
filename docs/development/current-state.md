@@ -242,10 +242,15 @@ distribution, model market, recharge, redeem, connectors, pool health,
 notifications, audits). System settings is one page with three tabs
 (registration & security, commerce & pricing, payment channels).
 
-Verification gap: the minimal local stack and `bootstrap-real-gateways.ps1`
-cover forwarding and failover only. The commerce loop has Go and console test
-coverage but no end-to-end acceptance script yet (`bootstrap-commerce.ps1` in
-the execution plan is not implemented).
+`scripts/bootstrap-commerce.ps1` fixes the commerce-loop MVP scenario as a
+repeatable acceptance run on the same stack (it materializes the gitignored
+commerce override when absent): hot-applied pricing settings, redeem-code
+lifecycle with duplicate rejection, `create-and-redeem` idempotency and
+payload-conflict rejection, the customer model market, and metered forwarding
+through both `/v1/chat/completions` and the `/v1/messages` bridge with settled
+usage records. Hosted checkout needs provider credentials, so the script
+probes the recharge-order route behind the payments gate and reports it
+skipped when no provider is enabled.
 
 ## Native Platform Slice Status
 
