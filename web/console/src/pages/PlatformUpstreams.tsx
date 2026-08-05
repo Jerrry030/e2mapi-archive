@@ -19,6 +19,7 @@ import {
 import {
   CheckCircleOutlined,
   EditOutlined,
+  FieldTimeOutlined,
   MinusCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -38,8 +39,12 @@ import { endpoints } from '../api/endpoints'
 import type { PlatformUpstream } from '../api/types'
 import ModelWhitelistPanel from '../components/ModelWhitelistPanel'
 import {
+  COOLDOWN_RULES_LABEL,
   MODEL_MAPPING_LABEL,
+  cooldownRowsFromLabel,
+  cooldownRuleCount,
   labelsFromForm,
+  labelsWithCooldownRules,
   modelMappingRowsFromLabel,
   preservedLabels,
 } from './upstreamLabels'
@@ -118,6 +123,23 @@ export default function PlatformUpstreams() {
   const [editingId, setEditingId] = useState<string>()
   const [modelTab, setModelTab] = useState<'whitelist' | 'mapping'>('whitelist')
   const [form] = Form.useForm()
+  // Cooldown rules are edited from a row action, not the main form: the rules
+  // are an operational lever an operator reaches for during an incident, and
+  // the edit modal is already dense. The row modal rewrites only the cooldown
+  // label and passes every other label through untouched.
+  const [cooldownRow, setCooldownRow] = useState<PlatformUpstream>()
+  const [cooldownForm] = Form.useForm()
+  const openCooldown = (upstream: PlatformUpstream) => {
+    setCooldownRow(upstream)
+    cooldownForm.resetFields()
+    cooldownForm.setFieldsValue({
+      rules: cooldownRowsFromLabel(upstream.labels?.[COOLDOWN_RULES_LABEL]),
+    })
+  }
+  const closeCooldown = () => {
+    setCooldownRow(undefined)
+    cooldownForm.resetFields()
+  }
   // The whitelist suggestions follow the group currently chosen in the form,
   // because a group declares the models it is allowed to sell.
   const watchedGroupId = Form.useWatch('group_id', form)
@@ -312,6 +334,12 @@ export default function PlatformUpstreams() {
                     onClick={() => testUpstream.mutate(row.id)}
                   >
                     {t('platformUpstreams.test', '测试')}
+                  </Button>
+                  <Button size="small" icon={<FieldTimeOutlined />} onClick={() => openCooldown(row)}>
+                    {t('platformUpstreams.cooldown.action', '冷却规则')}
+                    {cooldownRuleCount(row.labels?.[COOLDOWN_RULES_LABEL]) > 0
+                      ? ` (${cooldownRuleCount(row.labels?.[COOLDOWN_RULES_LABEL])})`
+                      : ''}
                   </Button>
                   {row.status !== 'retired' ? (
                     <Button
@@ -616,6 +644,96 @@ export default function PlatformUpstreams() {
               </Form.Item>
             </SettingRow>
           ) : null}
+        </Form>
+      </Modal>
+
+      <Modal
+        title={`${t('platformUpstreams.form.cooldownTitle', '错误冷却规则（可选）')} · ${cooldownRow?.name ?? ''}`}
+        open={Boolean(cooldownRow)}
+        onCancel={closeCooldown}
+        confirmLoading={updateUpstream.isPending}
+        onOk={() => cooldownForm.submit()}
+        width={640}
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          {t(
+            'platformUpstreams.form.cooldownHint',
+            '命中的错误会让该上游临时退出调度，冷却期内新请求自动避开。关键词留空表示只匹配状态码。',
+          )}
+        </Typography.Paragraph>
+        <Form
+          form={cooldownForm}
+          layout="vertical"
+          onFinish={async (values: { rules?: { status?: number; keywords?: string; cooldown_seconds?: number }[] }) => {
+            if (!cooldownRow) return
+            await updateUpstream.mutateAsync({
+              id: cooldownRow.id,
+              input: { labels: labelsWithCooldownRules(cooldownRow.labels, values.rules ?? []) },
+            })
+            message.success(t('platformUpstreams.cooldown.saved', '冷却规则已保存'))
+            closeCooldown()
+          }}
+        >
+          <Form.List name="rules">
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map((field) => (
+                  <Space key={field.key} align="baseline" style={{ display: 'flex', marginBottom: 8 }}>
+                    <Form.Item
+                      name={[field.name, 'status']}
+                      noStyle
+                      rules={[
+                        {
+                          required: true,
+                          message: t('platformUpstreams.form.cooldownStatusRequired', '请填写状态码'),
+                        },
+                      ]}
+                    >
+                      <InputNumber
+                        min={100}
+                        max={599}
+                        precision={0}
+                        style={{ width: 120 }}
+                        placeholder={t('platformUpstreams.form.cooldownStatus', '状态码')}
+                      />
+                    </Form.Item>
+                    <Form.Item name={[field.name, 'keywords']} noStyle>
+                      <Input
+                        style={{ width: 240 }}
+                        placeholder={t('platformUpstreams.form.cooldownKeywords', '关键词（逗号分隔，可空）')}
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      name={[field.name, 'cooldown_seconds']}
+                      noStyle
+                      rules={[
+                        {
+                          required: true,
+                          message: t('platformUpstreams.form.cooldownSecondsRequired', '请填写冷却秒数'),
+                        },
+                      ]}
+                    >
+                      <InputNumber
+                        min={1}
+                        precision={0}
+                        style={{ width: 140 }}
+                        placeholder={t('platformUpstreams.form.cooldownSeconds', '冷却秒数')}
+                      />
+                    </Form.Item>
+                    <Button
+                      type="text"
+                      danger
+                      icon={<MinusCircleOutlined />}
+                      onClick={() => remove(field.name)}
+                    />
+                  </Space>
+                ))}
+                <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()}>
+                  {t('platformUpstreams.form.cooldownAdd', '添加规则')}
+                </Button>
+              </>
+            )}
+          </Form.List>
         </Form>
       </Modal>
     </PageContainer>

@@ -746,6 +746,10 @@ const zh = {
       cooldownSecondsRequired: '请填写冷却秒数',
       cooldownAdd: '添加规则',
     },
+    cooldown: {
+      action: '冷却规则',
+      saved: '冷却规则已保存',
+    },
   },
   platformModelMarket: {
     title: '模型市场',

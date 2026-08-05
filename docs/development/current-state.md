@@ -150,9 +150,12 @@ content blocks — are rejected with a 400 up front instead of being forwarded
 in a shape the upstream would misread. Streams that end without an upstream
 usage frame settle conservatively, exactly like the OpenAI route.
 
-Model mapping and cooldown rules are configured per upstream in the console
-(structured form sections backed by the `e2m.model_mapping` and
-`e2m.error_cooldown_rules` channel labels). Cooldown state is in-process and
+Model mapping is configured in the upstream edit form; cooldown rules are
+edited from a row-level action on the upstream list, kept out of the already
+dense edit modal. Both structured editors are backed by the
+`e2m.model_mapping` and `e2m.error_cooldown_rules` channel labels, and each
+save rewrites only its own label so every other stored label passes through
+untouched. Cooldown state is in-process and
 clears on restart; durable circuit state remains the parked quality-circuit
 subsystem's responsibility.
 

@@ -3,7 +3,9 @@ import {
   COOLDOWN_RULES_LABEL,
   MODEL_MAPPING_LABEL,
   cooldownRowsFromLabel,
+  cooldownRuleCount,
   labelsFromForm,
+  labelsWithCooldownRules,
   modelMappingRowsFromLabel,
   preservedLabels,
 } from './upstreamLabels'
@@ -65,6 +67,42 @@ describe('upstream label serialization', () => {
       JSON.stringify([{ status: 429, keywords: ['quota', 'rate limit'], cooldown_seconds: 300 }]),
     )
     expect(rows).toEqual([{ status: 429, keywords: 'quota, rate limit', cooldown_seconds: 300 }])
+  })
+
+  it('rewrites only the cooldown label from the row editor', () => {
+    const stored = {
+      region: 'cn',
+      [MODEL_MAPPING_LABEL]: JSON.stringify({ a: 'b' }),
+      [COOLDOWN_RULES_LABEL]: JSON.stringify([{ status: 500, cooldown_seconds: 60 }]),
+    }
+    const labels = labelsWithCooldownRules(stored, [
+      { status: 429, keywords: 'quota, rate limit', cooldown_seconds: 300 },
+      { status: 429, keywords: '', cooldown_seconds: 0 }, // invalid row is dropped
+      {},
+    ])
+    expect(labels.region).toBe('cn')
+    expect(JSON.parse(labels[MODEL_MAPPING_LABEL])).toEqual({ a: 'b' })
+    expect(JSON.parse(labels[COOLDOWN_RULES_LABEL])).toEqual([
+      { status: 429, keywords: ['quota', 'rate limit'], cooldown_seconds: 300 },
+    ])
+  })
+
+  it('round-trips the cooldown editor through parse and serialize', () => {
+    const label = JSON.stringify([{ status: 429, keywords: ['quota'], cooldown_seconds: 300 }])
+    const rows = cooldownRowsFromLabel(label)
+    const labels = labelsWithCooldownRules({}, rows)
+    expect(JSON.parse(labels[COOLDOWN_RULES_LABEL])).toEqual(JSON.parse(label))
+    expect(cooldownRuleCount(label)).toBe(1)
+    expect(cooldownRuleCount(undefined)).toBe(0)
+  })
+
+  it('clears the cooldown label when every rule is removed', () => {
+    const labels = labelsWithCooldownRules(
+      { region: 'cn', [COOLDOWN_RULES_LABEL]: JSON.stringify([{ status: 500, cooldown_seconds: 60 }]) },
+      [],
+    )
+    expect(labels[COOLDOWN_RULES_LABEL]).toBeUndefined()
+    expect(labels.region).toBe('cn')
   })
 
   it('tolerates malformed stored labels instead of crashing the form', () => {

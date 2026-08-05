@@ -56,6 +56,37 @@ export function cooldownRowsFromLabel(raw?: string): CooldownRuleRow[] {
   }
 }
 
+// labelsWithCooldownRules rewrites only the cooldown label on top of the
+// channel's full label map. The row-scoped console editor goes through this
+// so a save can never drop the model mapping or any free-form label.
+export function labelsWithCooldownRules(
+  labels: Record<string, string> | undefined,
+  rows: CooldownRuleRow[] | undefined,
+): Record<string, string> {
+  const out = { ...(labels ?? {}) }
+  const rules: { status: number; keywords?: string[]; cooldown_seconds: number }[] = []
+  for (const row of rows ?? []) {
+    const status = Number(row?.status)
+    const seconds = Number(row?.cooldown_seconds)
+    if (!Number.isInteger(status) || status <= 0 || !Number.isInteger(seconds) || seconds <= 0) {
+      continue
+    }
+    const keywords = String(row?.keywords ?? '')
+      .split(',')
+      .map((keyword) => keyword.trim())
+      .filter(Boolean)
+    rules.push({ status, ...(keywords.length ? { keywords } : {}), cooldown_seconds: seconds })
+  }
+  if (rules.length) out[COOLDOWN_RULES_LABEL] = JSON.stringify(rules)
+  else delete out[COOLDOWN_RULES_LABEL]
+  return out
+}
+
+// cooldownRuleCount is the row badge: how many rules the label currently holds.
+export function cooldownRuleCount(raw?: string): number {
+  return cooldownRowsFromLabel(raw).length
+}
+
 // preservedLabels carries every label the form has no editor for. The console
 // only edits the model mapping, so anything else an operator or an earlier
 // build stored (cooldown rules, routing hints) must survive a save untouched

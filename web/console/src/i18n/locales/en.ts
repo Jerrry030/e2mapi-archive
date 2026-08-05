@@ -772,6 +772,10 @@ const en = {
       cooldownSecondsRequired: 'Cooldown seconds is required',
       cooldownAdd: 'Add rule',
     },
+    cooldown: {
+      action: 'Cooldown rules',
+      saved: 'Cooldown rules saved',
+    },
   },
   platformModelMarket: {
     title: 'Model market',
