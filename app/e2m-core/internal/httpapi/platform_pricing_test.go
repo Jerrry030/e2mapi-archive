@@ -184,6 +184,66 @@ func TestPlatformModelMarketShowsBestPriceWithoutOperationalDetail(t *testing.T)
 	}
 }
 
+func TestUpstreamCreateDerivesRequestHoldFromModelPrice(t *testing.T) {
+	srv, _, authSvc := newTestServer(t)
+	srv.SetVault(vault.NewMemoryVault())
+	srv.EnableInsecureSupplyUpstreams()
+	srv.SetPricing(pricingTestService(t))
+	handler := srv.Routes()
+	ctx := context.Background()
+
+	admin := createLoginUser(t, authSvc, "hold-admin@example.com", contracts.UserRolePlatformAdmin)
+	adminToken, _, _ := authSvc.Login(ctx, admin.Email, "password123")
+
+	newGroup := func(name string, models []string) contracts.UpstreamPool {
+		w := do(t, handler, http.MethodPost, "/api/v1/platform/groups", adminToken, map[string]any{
+			"name": name, "models": models, "status": "active",
+			"resource_class": "stable", "rate_multiplier": "1.5",
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create group %s: %d %s", name, w.Code, w.Body.String())
+		}
+		var group contracts.UpstreamPool
+		if err := json.Unmarshal(w.Body.Bytes(), &group); err != nil || group.ID == "" {
+			t.Fatalf("decode group: %v", err)
+		}
+		return group
+	}
+
+	// gpt-4o at rate 7.0 x multiplier 1.5: input 26.25 CNY/M, output 105
+	// CNY/M. The reference request (200k in + 100k out) prices the hold at
+	// 5.25 + 10.5 = 15.75 CNY.
+	expensive := newGroup("hold expensive", []string{"gpt-4o"})
+	derived := doWithIdempotency(t, handler, http.MethodPost, "/api/v1/platform/upstreams", adminToken, "hold-upstream-1", map[string]any{
+		"group_id": expensive.ID, "name": "derived hold", "base_url": "http://mock-openai:8093/v1",
+		"api_key": "hold-secret-1", "models": []string{"gpt-4o"}, "status": "active",
+	})
+	if derived.Code != http.StatusCreated || !strings.Contains(derived.Body.String(), `"max_request_micros":15750000`) {
+		t.Fatalf("derived hold: %d %s", derived.Code, derived.Body.String())
+	}
+
+	// A cheap model floors at the old fixed default instead of shrinking.
+	cheap := newGroup("hold cheap", []string{"gpt-4o-mini"})
+	floored := doWithIdempotency(t, handler, http.MethodPost, "/api/v1/platform/upstreams", adminToken, "hold-upstream-2", map[string]any{
+		"group_id": cheap.ID, "name": "floored hold", "base_url": "http://mock-openai:8093/v1",
+		"api_key": "hold-secret-2", "models": []string{"gpt-4o-mini"}, "status": "active",
+	})
+	if floored.Code != http.StatusCreated || !strings.Contains(floored.Body.String(), `"max_request_micros":1000000`) {
+		t.Fatalf("floored hold: %d %s", floored.Code, floored.Body.String())
+	}
+
+	// An explicit operator value always wins over the derivation.
+	explicit := doWithIdempotency(t, handler, http.MethodPost, "/api/v1/platform/upstreams", adminToken, "hold-upstream-3", map[string]any{
+		"group_id": expensive.ID, "name": "explicit hold", "base_url": "http://mock-openai:8093/v1",
+		"api_key": "hold-secret-3", "models": []string{"gpt-4o"},
+		"capacity": map[string]any{"max_request_micros": 2_000_000},
+		"status":   "active",
+	})
+	if explicit.Code != http.StatusCreated || !strings.Contains(explicit.Body.String(), `"max_request_micros":2000000`) {
+		t.Fatalf("explicit hold must win: %d %s", explicit.Code, explicit.Body.String())
+	}
+}
+
 func TestUpstreamCreateWithoutPricesFailsClosedWhenPricingDisabled(t *testing.T) {
 	srv, _, authSvc := newTestServer(t)
 	srv.SetVault(vault.NewMemoryVault())

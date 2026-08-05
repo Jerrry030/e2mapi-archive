@@ -733,6 +733,7 @@ const en = {
       priority: 'Priority',
       weight: 'Weight',
       capacity: 'Capacity',
+      maxRequest: 'Per-request cap',
     },
     form: {
       group: 'Group',
@@ -749,6 +750,8 @@ const en = {
       maxConcurrency: 'Max concurrency',
       capacityPercent: 'Capacity percent',
       maxRequest: 'Per-request cap (CNY)',
+      maxRequestDesc: 'Most balance a single request may lock; leave empty to derive it from this upstream\'s sell price (expensive models scale up).',
+      maxRequestAuto: 'auto',
       status: 'Status',
       labels: 'Labels (key=value, comma separated)',
       advanced: 'Other',

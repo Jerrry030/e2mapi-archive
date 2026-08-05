@@ -197,6 +197,9 @@ export default function PlatformUpstreams() {
       weight: upstream.weight,
       max_concurrency: upstream.capacity?.max_concurrency,
       capacity_percent: upstream.capacity?.capacity_percent,
+      max_request_yuan: upstream.capacity?.max_request_micros
+        ? upstream.capacity.max_request_micros / 1_000_000
+        : undefined,
       status: upstream.status,
       preserved_labels: preservedLabels(upstream.labels),
       model_mapping: modelMappingRowsFromLabel(upstream.labels?.[MODEL_MAPPING_LABEL]),
@@ -320,6 +323,13 @@ export default function PlatformUpstreams() {
                 }`,
             },
             {
+              title: t('platformUpstreams.columns.maxRequest', '单请求上限'),
+              render: (_: unknown, row: PlatformUpstream) =>
+                row.capacity?.max_request_micros
+                  ? `¥${(row.capacity.max_request_micros / 1_000_000).toFixed(2)}`
+                  : '-',
+            },
+            {
               title: t('platformGroups.columns.actions', '操作'),
               key: 'actions',
               render: (_: unknown, row: PlatformUpstream) => (
@@ -414,6 +424,11 @@ export default function PlatformUpstreams() {
               capacity: {
                 max_concurrency: values.max_concurrency || 0,
                 capacity_percent: values.capacity_percent ?? 100,
+                // Omitted = derive from the sell price on create / keep the
+                // stored value on edit; only an explicit entry overrides.
+                ...(values.max_request_yuan
+                  ? { max_request_micros: Math.round(values.max_request_yuan * 1_000_000) }
+                  : {}),
               },
             }
             if (editingId) {
@@ -626,6 +641,22 @@ export default function PlatformUpstreams() {
           >
             <Form.Item name="capacity_percent" noStyle>
               <InputNumber min={0} max={100} precision={0} style={{ width: 140 }} />
+            </Form.Item>
+          </SettingRow>
+          <SettingRow
+            title={t('platformUpstreams.form.maxRequest', '单请求上限（元）')}
+            desc={t(
+              'platformUpstreams.form.maxRequestDesc',
+              '单次请求最多锁定的余额；留空则按该上游售价自动推导（贵模型自动放大）。',
+            )}
+          >
+            <Form.Item name="max_request_yuan" noStyle>
+              <InputNumber
+                min={0.01}
+                precision={2}
+                style={{ width: 140 }}
+                placeholder={t('platformUpstreams.form.maxRequestAuto', '自动')}
+              />
             </Form.Item>
           </SettingRow>
           {editingId ? (

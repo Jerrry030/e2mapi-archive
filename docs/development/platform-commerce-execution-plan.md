@@ -6,6 +6,7 @@
 
 实施进度：
 
+- 2026-08-05：**单请求预扣上限按售价推导 + 冷却规则行内 UI**——①预扣上限：创建上游未显式给出 `capacity.max_request_micros` 时，按该上游物化售价 ×参考请求规模（20 万输入 + 10 万输出 token）推导，下限维持原 1 元默认、上限 100 元；显式值永远优先，编辑不重推导。控制台上游表单新增可选"单请求上限（元）"行（留空=自动），列表新增上限列。httpapi 测试覆盖贵模型推导值（gpt-4o×1.5 倍率=15.75 元）、便宜模型触底、显式值优先。②冷却规则：`e2m.error_cooldown_rules` 回归控制台，走上游列表行内操作+独立小弹窗（不进编辑表单），保存只重写冷却标签、其余标签（含模型映射）全部透传；序列化 helper 测试锁住"无效行丢弃/清空即删标签/透传不破坏"。
 - 2026-08-05：**商业化端到端验收脚本落地**——`scripts/bootstrap-commerce.ps1`（第 8 节的遗留项）把 2.1 场景固化为可复现验收：热生效商务设置（汇率 7.20）、兑换码批量生成→兑换→重复兑换 400、`create-and-redeem` 幂等重放（replay=true、码身份不变）与异载荷 409、客户模型市场、`/v1/chat/completions` 与 `/v1/messages` 双路计量转发、结算台账 ≥3 条 settled。托管支付下单为探针步骤：无收款渠道时验证路由在支付门禁后可达（400）并明示跳过。脚本缺 override 文件时自动物化 gitignored 的 commerce-override.yml。全部断言已在本地验收栈以等价探针逐步跑通（含真库结算）。
 - 2026-08-05：**`/v1/messages` 协议桥落地**（负责人于本日确认解除延期；D1 其余部分——OAuth 订阅上游、粘性会话等——维持不做）。`internal/supplygateway/messages.go`：下游 Anthropic Messages 协议（`x-api-key`/Bearer 双凭据、字符串与 text block 两种 content 编码、system/温度/停止序列映射）→ 上游仍走 `/v1/chat/completions`，复用同一预扣/结算路径、故障转移循环与冷却状态。非流式响应重写为 Anthropic message 文档；流式把 OpenAI SSE 重发为 Anthropic 事件语法（`message_start`→`message_stop`，权威 token 计数在 `message_delta.usage`）；错误统一 `{"type":"error","error":{...}}` 形状，上游 OpenAI 错误文档翻译后透出。工具调用与非 text block **fail-closed 400 拒绝**（桥尚未翻译，不静默转发）。无 usage 帧的流保守结算，语义与 OpenAI 路一致。测试七组：请求/响应翻译、SSE 事件序与 `[DONE]` 不外泄、不支持特性拒绝、双凭据、store/上游错误形状映射、无 usage 保守结算、跨渠道故障转移。路由挂载 `Routes()` 与 `mountCoreRoutes` 双处 + 挂载测试。core 全量回归绿。
 

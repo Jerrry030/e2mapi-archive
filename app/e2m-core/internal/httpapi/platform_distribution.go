@@ -22,6 +22,32 @@ import (
 
 const defaultPlatformMaxRequestMicros int64 = 1_000_000
 
+// The per-request hold ceiling scales with what the upstream actually
+// charges: a cap that fits a budget model is several requests' worth of an
+// expensive one, and a fixed cap forced expensive-model settlements into
+// debt as a matter of course. The reference size is a deliberately generous
+// single request (200k prompt + 100k completion tokens) priced at the
+// endpoint's own sell price, floored at the old fixed default so cheap
+// models keep their current behaviour and capped so one request can never
+// lock an unbounded slice of a wallet.
+const (
+	derivedHoldInputTokens  int64 = 200_000
+	derivedHoldOutputTokens int64 = 100_000
+	maxDerivedHoldMicros    int64 = 100_000_000
+)
+
+func derivedMaxRequestMicros(endpoint contracts.SupplyChannelEndpoint) int64 {
+	cost := endpoint.InputPriceMicrosPerMillion*derivedHoldInputTokens/1_000_000 +
+		endpoint.OutputPriceMicrosPerMillion*derivedHoldOutputTokens/1_000_000
+	if cost < defaultPlatformMaxRequestMicros {
+		return defaultPlatformMaxRequestMicros
+	}
+	if cost > maxDerivedHoldMicros {
+		return maxDerivedHoldMicros
+	}
+	return cost
+}
+
 const platformUpstreamTestTimeout = 10 * time.Second
 
 // registerPlatformDistributionRoutes exposes E2M's native distribution
@@ -843,6 +869,10 @@ func (s *Server) platformUpstreamRecords(input platformUpstreamRequest, group co
 	}
 	if input.Capacity.MaxRequestMicros != nil {
 		endpoint.MaxRequestMicros = *input.Capacity.MaxRequestMicros
+	} else if currentEndpoint == nil {
+		// No explicit cap on create: derive it from this upstream's own sell
+		// price instead of the one-size fixed default.
+		endpoint.MaxRequestMicros = derivedMaxRequestMicros(endpoint)
 	}
 	endpoint.Enabled = channel.Status == contracts.UpstreamChannelActive
 	if currentEndpoint == nil {

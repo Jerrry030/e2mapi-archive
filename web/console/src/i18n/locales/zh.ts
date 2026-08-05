@@ -708,6 +708,7 @@ const zh = {
       priority: '优先级',
       weight: '权重',
       capacity: '容量',
+      maxRequest: '单请求上限',
     },
     form: {
       group: '所属分组',
@@ -724,6 +725,8 @@ const zh = {
       maxConcurrency: '最大并发',
       capacityPercent: '容量百分比',
       maxRequest: '单请求上限（元）',
+      maxRequestDesc: '单次请求最多锁定的余额；留空则按该上游售价自动推导（贵模型自动放大）。',
+      maxRequestAuto: '自动',
       status: '状态',
       labels: '标签（key=value，逗号分隔）',
       advanced: '其他',
