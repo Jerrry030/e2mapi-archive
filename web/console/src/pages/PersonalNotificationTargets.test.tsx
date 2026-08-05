@@ -3,6 +3,7 @@ import { App as AntdApp } from 'antd'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setSession } from '../api/auth'
+import { setLocale } from '../i18n'
 import PersonalNotificationTargets from './PersonalNotificationTargets'
 
 function response(body: unknown, status = 200) {
@@ -27,6 +28,7 @@ function renderTargets() {
 
 beforeEach(() => {
   localStorage.clear()
+  setLocale('zh')
   setSession('client-token', {
     id: 7,
     email: 'owner@example.com',
@@ -52,6 +54,7 @@ afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
   localStorage.clear()
+  setLocale('zh')
 })
 
 describe('PersonalNotificationTargets', () => {
