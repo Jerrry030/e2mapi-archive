@@ -632,8 +632,15 @@ func (s *MemoryStore) ReserveSupplyRequest(ctx context.Context, tokenHash, reque
 	}
 	walletKey := walletMapKey(key.UserID, currency)
 	wallet := s.wallets[walletKey]
-	if wallet.AvailableMicros < reserve {
+	// The hold is a ceiling, not an entry fee: a wallet holding less than the
+	// configured per-request cap reserves everything it has instead of being
+	// locked out. Settlement still charges the true cost and may draw the
+	// difference from whatever remains, so the balance is the real limit.
+	if wallet.AvailableMicros <= 0 {
 		return contracts.SupplyReservationResult{}, ErrConflict
+	}
+	if reserve > wallet.AvailableMicros {
+		reserve = wallet.AvailableMicros
 	}
 	instanceSpentToday, keySpentToday := int64(0), int64(0)
 	dayStart := s.now().UTC().Truncate(24 * time.Hour)
@@ -736,8 +743,21 @@ func (s *MemoryStore) settleSupplyLocked(reservationID string, promptTokens, com
 	} else if !release {
 		charged = tokenCharge(usage.InputPriceMicrosPerMillion, promptTokens) + tokenCharge(usage.OutputPriceMicrosPerMillion, completionTokens)
 		supplier = tokenCharge(usage.InputSupplierMicrosPerMillion, promptTokens) + tokenCharge(usage.OutputSupplierMicrosPerMillion, completionTokens)
-		if charged > reservation.ReservedMicros || supplier > charged {
+		if supplier > charged {
 			return contracts.SupplySettlementResult{}, ErrConflict
+		}
+		// A request that costs more than the hold is charged in full as long as
+		// the wallet can still cover the difference; otherwise it is charged
+		// down to zero. The balance is never allowed to go negative, so the
+		// platform absorbs at most one request's shortfall per drained wallet.
+		if charged > reservation.ReservedMicros {
+			affordable := reservation.ReservedMicros + wallet.AvailableMicros
+			if charged > affordable {
+				charged = affordable
+			}
+			if supplier > charged {
+				supplier = charged
+			}
 		}
 	}
 	released := reservation.ReservedMicros - charged
@@ -760,7 +780,11 @@ func (s *MemoryStore) settleSupplyLocked(reservationID string, promptTokens, com
 		reservation.Status = contracts.WalletReservationSettled
 		usage.Status = contracts.SupplyUsageSettled
 		if charged > 0 {
-			s.appendSupplySettlementJournalLocked(reservation.UserID, reservation.Currency, charged, supplier, "settle:"+reservation.ID, "supply_reservation", reservation.ID, now)
+			fromReserved := reservation.ReservedMicros
+			if charged < fromReserved {
+				fromReserved = charged
+			}
+			s.appendSupplySettlementJournalLocked(reservation.UserID, reservation.Currency, charged, supplier, fromReserved, "settle:"+reservation.ID, "supply_reservation", reservation.ID, now)
 		}
 		if released > 0 {
 			s.appendWalletJournalLocked(reservation.UserID, contracts.WalletJournalRelease, reservation.Currency, released, "settle-release:"+reservation.ID, "supply_reservation", reservation.ID, contracts.WalletAccountUserReserved, contracts.WalletAccountUserAvailable, now)
@@ -772,9 +796,17 @@ func (s *MemoryStore) settleSupplyLocked(reservationID string, promptTokens, com
 	return contracts.SupplySettlementResult{Wallet: wallet, Reservation: reservation, Usage: usage, ChargedMicros: charged, SupplierMicros: supplier, ReleasedMicros: released}, nil
 }
 
-func (s *MemoryStore) appendSupplySettlementJournalLocked(userID int64, currency string, charged, supplier int64, idempotencyKey, referenceType, referenceID string, now time.Time) contracts.WalletJournal {
+func (s *MemoryStore) appendSupplySettlementJournalLocked(userID int64, currency string, charged, supplier, fromReserved int64, idempotencyKey, referenceType, referenceID string, now time.Time) contracts.WalletJournal {
 	journal := contracts.WalletJournal{ID: s.nextID("wjnl"), UserID: userID, Kind: contracts.WalletJournalSettle, Currency: currency, AmountMicros: charged, IdempotencyKey: idempotencyKey, ReferenceType: referenceType, ReferenceID: referenceID, CreatedAt: now}
-	journal.Entries = append(journal.Entries, contracts.WalletEntry{ID: s.nextID("went"), JournalID: journal.ID, Account: contracts.WalletAccountUserReserved, Direction: contracts.WalletEntryDebit, AmountMicros: charged, Currency: currency, CreatedAt: now})
+	if fromReserved > 0 {
+		journal.Entries = append(journal.Entries, contracts.WalletEntry{ID: s.nextID("went"), JournalID: journal.ID, Account: contracts.WalletAccountUserReserved, Direction: contracts.WalletEntryDebit, AmountMicros: fromReserved, Currency: currency, CreatedAt: now})
+	}
+	// Anything charged beyond the hold comes straight out of available funds,
+	// so the ledger records two debit sources rather than overdrawing the
+	// reserved account.
+	if extra := charged - fromReserved; extra > 0 {
+		journal.Entries = append(journal.Entries, contracts.WalletEntry{ID: s.nextID("went"), JournalID: journal.ID, Account: contracts.WalletAccountUserAvailable, Direction: contracts.WalletEntryDebit, AmountMicros: extra, Currency: currency, CreatedAt: now})
+	}
 	if supplier > 0 {
 		journal.Entries = append(journal.Entries, contracts.WalletEntry{ID: s.nextID("went"), JournalID: journal.ID, Account: contracts.WalletAccountUpstreamPayable, Direction: contracts.WalletEntryCredit, AmountMicros: supplier, Currency: currency, CreatedAt: now})
 	}

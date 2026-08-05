@@ -584,7 +584,7 @@ func insertWalletJournal(ctx context.Context, tx pgx.Tx, userID int64, kind cont
 	return err
 }
 
-func insertSupplySettlementJournal(ctx context.Context, tx pgx.Tx, userID int64, currency string, charged, supplier int64, idempotencyKey, referenceType, referenceID string, now time.Time) error {
+func insertSupplySettlementJournal(ctx context.Context, tx pgx.Tx, userID int64, currency string, charged, supplier, fromReserved int64, idempotencyKey, referenceType, referenceID string, now time.Time) error {
 	if charged <= 0 || supplier < 0 || supplier > charged {
 		if charged == 0 && supplier == 0 {
 			return nil
@@ -596,9 +596,20 @@ func insertSupplySettlementJournal(ctx context.Context, tx pgx.Tx, userID int64,
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, journalID, userID, string(contracts.WalletJournalSettle), currency, charged, idempotencyKey, referenceType, referenceID, now); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO wallet_entries(id,journal_id,account,direction,amount_micros,currency,created_at)
-		VALUES($1,$2,$3,'debit',$4,$5,$6)`, newID("went"), journalID, string(contracts.WalletAccountUserReserved), charged, currency, now); err != nil {
-		return err
+	if fromReserved > 0 {
+		if _, err := tx.Exec(ctx, `INSERT INTO wallet_entries(id,journal_id,account,direction,amount_micros,currency,created_at)
+			VALUES($1,$2,$3,'debit',$4,$5,$6)`, newID("went"), journalID, string(contracts.WalletAccountUserReserved), fromReserved, currency, now); err != nil {
+			return err
+		}
+	}
+	// Anything charged beyond the hold comes straight out of available funds,
+	// so the ledger records two debit sources rather than overdrawing the
+	// reserved account.
+	if extra := charged - fromReserved; extra > 0 {
+		if _, err := tx.Exec(ctx, `INSERT INTO wallet_entries(id,journal_id,account,direction,amount_micros,currency,created_at)
+			VALUES($1,$2,$3,'debit',$4,$5,$6)`, newID("went"), journalID, string(contracts.WalletAccountUserAvailable), extra, currency, now); err != nil {
+			return err
+		}
 	}
 	if supplier > 0 {
 		if _, err := tx.Exec(ctx, `INSERT INTO wallet_entries(id,journal_id,account,direction,amount_micros,currency,created_at)
@@ -721,6 +732,24 @@ func (s *PostgresStore) ReserveSupplyRequest(ctx context.Context, tokenHash, req
 		key.DailyLimitMicros > 0 && keySpentToday+reserve > key.DailyLimitMicros {
 		return contracts.SupplyReservationResult{}, ErrConflict
 	}
+	// The hold is a ceiling, not an entry fee: a wallet holding less than the
+	// configured per-request cap reserves everything it has instead of being
+	// locked out. Settlement still charges the true cost and may draw the
+	// difference from whatever remains, so the balance is the real limit.
+	var availableBeforeHold int64
+	if err := tx.QueryRow(ctx, `SELECT available_micros FROM wallet_accounts WHERE user_id=$1 AND currency=$2 FOR UPDATE`,
+		key.UserID, currency).Scan(&availableBeforeHold); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return contracts.SupplyReservationResult{}, ErrConflict
+		}
+		return contracts.SupplyReservationResult{}, err
+	}
+	if availableBeforeHold <= 0 {
+		return contracts.SupplyReservationResult{}, ErrConflict
+	}
+	if reserve > availableBeforeHold {
+		reserve = availableBeforeHold
+	}
 	wallet, err := scanHybridWallet(tx.QueryRow(ctx, `UPDATE wallet_accounts SET available_micros=available_micros-$3,
 		reserved_micros=reserved_micros+$3,version=version+1,updated_at=statement_timestamp()
 		WHERE user_id=$1 AND currency=$2 AND available_micros >= $3 RETURNING user_id,currency,available_micros,reserved_micros,version,updated_at`, key.UserID, currency, reserve))
@@ -834,14 +863,27 @@ func (s *PostgresStore) finishSupplyRequest(ctx context.Context, reservationID s
 	} else if !release {
 		charged = tokenCharge(usage.InputPriceMicrosPerMillion, promptTokens) + tokenCharge(usage.OutputPriceMicrosPerMillion, completionTokens)
 		supplier = tokenCharge(usage.InputSupplierMicrosPerMillion, promptTokens) + tokenCharge(usage.OutputSupplierMicrosPerMillion, completionTokens)
-		if charged > reservation.ReservedMicros || supplier > charged {
+		if supplier > charged {
 			return contracts.SupplySettlementResult{}, ErrConflict
+		}
+		// A request that costs more than the hold is charged in full as long as
+		// the wallet can still cover the difference; otherwise it is charged
+		// down to zero. The balance is never allowed to go negative, so the
+		// platform absorbs at most one request's shortfall per drained wallet.
+		if charged > reservation.ReservedMicros {
+			affordable := reservation.ReservedMicros + wallet.AvailableMicros
+			if charged > affordable {
+				charged = affordable
+			}
+			if supplier > charged {
+				supplier = charged
+			}
 		}
 	}
 	released := reservation.ReservedMicros - charged
 	now := nowUTC()
 	wallet, err = scanHybridWallet(tx.QueryRow(ctx, `UPDATE wallet_accounts SET reserved_micros=reserved_micros-$3,
-		available_micros=available_micros+$4,version=version+1,updated_at=$5 WHERE user_id=$1 AND currency=$2 AND reserved_micros >= $3
+		available_micros=available_micros+$4,version=version+1,updated_at=$5 WHERE user_id=$1 AND currency=$2 AND reserved_micros >= $3 AND available_micros + $4 >= 0
 		RETURNING user_id,currency,available_micros,reserved_micros,version,updated_at`, reservation.UserID, reservation.Currency, reservation.ReservedMicros, released, now))
 	if err != nil {
 		return contracts.SupplySettlementResult{}, err
@@ -865,7 +907,11 @@ func (s *PostgresStore) finishSupplyRequest(ctx context.Context, reservationID s
 			return contracts.SupplySettlementResult{}, err
 		}
 	} else {
-		if err := insertSupplySettlementJournal(ctx, tx, reservation.UserID, reservation.Currency, charged, supplier, "settle:"+reservation.ID, "supply_reservation", reservation.ID, now); err != nil {
+		fromReserved := reservation.ReservedMicros
+		if charged < fromReserved {
+			fromReserved = charged
+		}
+		if err := insertSupplySettlementJournal(ctx, tx, reservation.UserID, reservation.Currency, charged, supplier, fromReserved, "settle:"+reservation.ID, "supply_reservation", reservation.ID, now); err != nil {
 			return contracts.SupplySettlementResult{}, err
 		}
 		if err := insertWalletJournal(ctx, tx, reservation.UserID, contracts.WalletJournalRelease, reservation.Currency, released, "settle-release:"+reservation.ID, "supply_reservation", reservation.ID, contracts.WalletAccountUserReserved, contracts.WalletAccountUserAvailable, now); err != nil {

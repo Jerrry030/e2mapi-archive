@@ -140,6 +140,107 @@ func TestMemorySupplyReserveSettleAndReleaseAreBalanced(t *testing.T) {
 	}
 }
 
+// setWallet replaces the wallet balance for a settlement-boundary test.
+func setWallet(t *testing.T, st *MemoryStore, userID int64, availableMicros int64) {
+	t.Helper()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.wallets[walletMapKey(userID, "CNY")] = contracts.Wallet{
+		UserID: userID, Currency: "CNY", AvailableMicros: availableMicros, Version: 1, UpdatedAt: st.now(),
+	}
+}
+
+func TestMemoryWalletSmallerThanHoldCanStillSpend(t *testing.T) {
+	st, owner, _, _, plaintext := seedMemoryHybridSupply(t)
+	ctx := context.Background()
+	// The endpoint holds 100_000 per request; this wallet has less than that.
+	setWallet(t, st, owner.ID, 40_000)
+
+	reserved, err := st.ReserveSupplyRequest(ctx, contracts.HashVirtualKey(plaintext), "small-balance-1", "gpt-test", "CNY", nil)
+	if err != nil {
+		t.Fatalf("a wallet below the per-request hold must still be usable: %v", err)
+	}
+	if reserved.Reservation.ReservedMicros != 40_000 {
+		t.Fatalf("hold must shrink to the available balance, got %d", reserved.Reservation.ReservedMicros)
+	}
+	if reserved.Wallet.AvailableMicros != 0 || reserved.Wallet.ReservedMicros != 40_000 {
+		t.Fatalf("unexpected wallet after hold: %+v", reserved.Wallet)
+	}
+
+	// An empty wallet is still refused: the balance, not the cap, is the limit.
+	setWallet(t, st, owner.ID, 0)
+	if _, err := st.ReserveSupplyRequest(ctx, contracts.HashVirtualKey(plaintext), "small-balance-2", "gpt-test", "CNY", nil); !errors.Is(err, ErrConflict) {
+		t.Fatalf("an empty wallet must be refused, got %v", err)
+	}
+}
+
+func TestMemorySettlementChargesAboveTheHoldWithoutOverdraft(t *testing.T) {
+	ctx := context.Background()
+
+	// Funded wallet: the true cost exceeds the hold and is charged in full.
+	st, owner, _, _, plaintext := seedMemoryHybridSupply(t)
+	setWallet(t, st, owner.ID, 500_000)
+	reserved, err := st.ReserveSupplyRequest(ctx, contracts.HashVirtualKey(plaintext), "over-hold-1", "gpt-test", "CNY", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserved.Reservation.ReservedMicros != 100_000 {
+		t.Fatalf("expected the configured hold, got %d", reserved.Reservation.ReservedMicros)
+	}
+	// 150_000 prompt tokens at 1_000_000 micros per million = 150_000 micros,
+	// which is 1.5x the hold.
+	settled, err := st.SettleSupplyRequest(ctx, reserved.Reservation.ID, 150_000, 0)
+	if err != nil {
+		t.Fatalf("settling above the hold must succeed when funds remain: %v", err)
+	}
+	if settled.ChargedMicros != 150_000 {
+		t.Fatalf("the true cost must be charged, got %d", settled.ChargedMicros)
+	}
+	if settled.Wallet.AvailableMicros != 350_000 || settled.Wallet.ReservedMicros != 0 {
+		t.Fatalf("unexpected wallet after settling above the hold: %+v", settled.Wallet)
+	}
+
+	// Drained wallet: the charge is capped at the balance, never negative.
+	st2, owner2, _, _, plaintext2 := seedMemoryHybridSupply(t)
+	setWallet(t, st2, owner2.ID, 120_000)
+	reserved2, err := st2.ReserveSupplyRequest(ctx, contracts.HashVirtualKey(plaintext2), "over-hold-2", "gpt-test", "CNY", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settled2, err := st2.SettleSupplyRequest(ctx, reserved2.Reservation.ID, 500_000, 0)
+	if err != nil {
+		t.Fatalf("settling beyond the balance must still settle: %v", err)
+	}
+	if settled2.ChargedMicros != 120_000 {
+		t.Fatalf("the charge must be capped at the balance, got %d", settled2.ChargedMicros)
+	}
+	if settled2.Wallet.AvailableMicros != 0 || settled2.Wallet.ReservedMicros != 0 {
+		t.Fatalf("the wallet must land on zero, never negative: %+v", settled2.Wallet)
+	}
+
+	// The ledger still balances once the charge spans both debit sources.
+	journals, err := st.ListWalletJournals(ctx, owner.ID, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, journal := range journals {
+		if journal.Kind != contracts.WalletJournalSettle {
+			continue
+		}
+		debit, credit := int64(0), int64(0)
+		for _, entry := range journal.Entries {
+			if entry.Direction == contracts.WalletEntryDebit {
+				debit += entry.AmountMicros
+			} else {
+				credit += entry.AmountMicros
+			}
+		}
+		if debit != credit || debit != journal.AmountMicros {
+			t.Fatalf("settlement journal is unbalanced: debit=%d credit=%d amount=%d", debit, credit, journal.AmountMicros)
+		}
+	}
+}
+
 func TestMemoryReserveEnforcesUserPlatformLimits(t *testing.T) {
 	st, owner, _, _, plaintext := seedMemoryHybridSupply(t)
 	ctx := context.Background()
