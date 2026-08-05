@@ -146,7 +146,6 @@ export default function PlatformUpstreams() {
       weight: 1,
       max_concurrency: 0,
       capacity_percent: 100,
-      max_request_micros: 1,
       status: 'active',
       models: [],
       preserved_labels: {},
@@ -176,9 +175,6 @@ export default function PlatformUpstreams() {
       weight: upstream.weight,
       max_concurrency: upstream.capacity?.max_concurrency,
       capacity_percent: upstream.capacity?.capacity_percent,
-      max_request_micros: upstream.capacity?.max_request_micros
-        ? upstream.capacity.max_request_micros / 1_000_000
-        : undefined,
       status: upstream.status,
       preserved_labels: preservedLabels(upstream.labels),
       model_mapping: modelMappingRowsFromLabel(upstream.labels?.[MODEL_MAPPING_LABEL]),
@@ -369,7 +365,7 @@ export default function PlatformUpstreams() {
         <Form
           form={form}
           layout="vertical"
-          initialValues={{ priority: 0, weight: 1, capacity_percent: 100, max_request_micros: 1, status: 'active' }}
+          initialValues={{ priority: 0, weight: 1, capacity_percent: 100, status: 'active' }}
           onFinish={async (values) => {
             const models = ((values.models ?? []) as string[])
               .map((model) => model.trim())
@@ -390,7 +386,6 @@ export default function PlatformUpstreams() {
               capacity: {
                 max_concurrency: values.max_concurrency || 0,
                 capacity_percent: values.capacity_percent ?? 100,
-                max_request_micros: Math.round((values.max_request_micros || 1) * 1_000_000),
               },
             }
             if (editingId) {
@@ -603,14 +598,6 @@ export default function PlatformUpstreams() {
           >
             <Form.Item name="capacity_percent" noStyle>
               <InputNumber min={0} max={100} precision={0} style={{ width: 140 }} />
-            </Form.Item>
-          </SettingRow>
-          <SettingRow
-            title={t('platformUpstreams.form.maxRequest', '单请求上限（元）')}
-            desc={t('platformUpstreams.form.maxRequestDesc', '单次请求预扣的金额上限，超出的请求不会被调度到这里。')}
-          >
-            <Form.Item name="max_request_micros" noStyle>
-              <InputNumber min={0.000001} precision={6} style={{ width: 140 }} />
             </Form.Item>
           </SettingRow>
           {editingId ? (
