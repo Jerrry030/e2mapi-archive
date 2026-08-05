@@ -207,10 +207,25 @@ export default function PlatformDistribution() {
           >
             {wallet.data ? (
               <Space direction="vertical">
-                <Statistic title="可用余额" value={yuan(wallet.data.available_micros)} />
+                {wallet.data.available_micros < 0 ? (
+                  // A negative balance is debt from a request that cost more
+                  // than the funds it held; the next credit offsets it.
+                  <Statistic
+                    title="欠款"
+                    value={yuan(-wallet.data.available_micros)}
+                    valueStyle={{ color: '#cf1322' }}
+                  />
+                ) : (
+                  <Statistic title="可用余额" value={yuan(wallet.data.available_micros)} />
+                )}
                 <Typography.Text type="secondary">
                   预占：{yuan(wallet.data.reserved_micros)} · {wallet.data.currency}
                 </Typography.Text>
+                {wallet.data.available_micros < 0 ? (
+                  <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                    欠款期间无法发起新请求，下次充值将自动抵扣。
+                  </Typography.Text>
+                ) : null}
               </Space>
             ) : (
               <Typography.Text type="secondary">暂无钱包数据</Typography.Text>

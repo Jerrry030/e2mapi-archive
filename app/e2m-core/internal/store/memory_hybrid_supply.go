@@ -180,6 +180,9 @@ func (s *MemoryStore) AdjustWalletBalance(ctx context.Context, userID int64, cur
 	}
 	walletKey := walletMapKey(userID, currency)
 	wallet := s.wallets[walletKey]
+	// A credit is always accepted, including a partial repayment that leaves
+	// the wallet still in debt. Only a debit is refused when it would create
+	// or deepen debt: debt may only arise from metered settlement.
 	if deltaMicros < 0 && wallet.AvailableMicros < -deltaMicros {
 		return contracts.Wallet{}, contracts.WalletJournal{}, ErrConflict
 	}
@@ -746,19 +749,10 @@ func (s *MemoryStore) settleSupplyLocked(reservationID string, promptTokens, com
 		if supplier > charged {
 			return contracts.SupplySettlementResult{}, ErrConflict
 		}
-		// A request that costs more than the hold is charged in full as long as
-		// the wallet can still cover the difference; otherwise it is charged
-		// down to zero. The balance is never allowed to go negative, so the
-		// platform absorbs at most one request's shortfall per drained wallet.
-		if charged > reservation.ReservedMicros {
-			affordable := reservation.ReservedMicros + wallet.AvailableMicros
-			if charged > affordable {
-				charged = affordable
-			}
-			if supplier > charged {
-				supplier = charged
-			}
-		}
+		// A request is charged what it actually cost, even when that exceeds
+		// the hold and the funds left. The shortfall is carried as debt (a
+		// negative available balance) and is offset by the next credit; a
+		// wallet at or below zero cannot start further requests.
 	}
 	released := reservation.ReservedMicros - charged
 	now := s.now()

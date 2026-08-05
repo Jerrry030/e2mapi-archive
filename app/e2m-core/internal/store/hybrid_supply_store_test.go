@@ -174,7 +174,7 @@ func TestMemoryWalletSmallerThanHoldCanStillSpend(t *testing.T) {
 	}
 }
 
-func TestMemorySettlementChargesAboveTheHoldWithoutOverdraft(t *testing.T) {
+func TestMemorySettlementChargesTrueCostAndCarriesDebt(t *testing.T) {
 	ctx := context.Background()
 
 	// Funded wallet: the true cost exceeds the hold and is charged in full.
@@ -200,7 +200,8 @@ func TestMemorySettlementChargesAboveTheHoldWithoutOverdraft(t *testing.T) {
 		t.Fatalf("unexpected wallet after settling above the hold: %+v", settled.Wallet)
 	}
 
-	// Drained wallet: the charge is capped at the balance, never negative.
+	// Wallet that cannot cover the true cost: the full cost is still charged
+	// and the shortfall is carried as debt.
 	st2, owner2, _, _, plaintext2 := seedMemoryHybridSupply(t)
 	setWallet(t, st2, owner2.ID, 120_000)
 	reserved2, err := st2.ReserveSupplyRequest(ctx, contracts.HashVirtualKey(plaintext2), "over-hold-2", "gpt-test", "CNY", nil)
@@ -211,11 +212,41 @@ func TestMemorySettlementChargesAboveTheHoldWithoutOverdraft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("settling beyond the balance must still settle: %v", err)
 	}
-	if settled2.ChargedMicros != 120_000 {
-		t.Fatalf("the charge must be capped at the balance, got %d", settled2.ChargedMicros)
+	if settled2.ChargedMicros != 500_000 {
+		t.Fatalf("the true cost must be charged even without funds, got %d", settled2.ChargedMicros)
 	}
-	if settled2.Wallet.AvailableMicros != 0 || settled2.Wallet.ReservedMicros != 0 {
-		t.Fatalf("the wallet must land on zero, never negative: %+v", settled2.Wallet)
+	// 120_000 held, 500_000 charged -> 380_000 of debt.
+	if settled2.Wallet.AvailableMicros != -380_000 || settled2.Wallet.ReservedMicros != 0 {
+		t.Fatalf("the shortfall must be carried as debt: %+v", settled2.Wallet)
+	}
+
+	// A wallet in debt cannot start new requests.
+	if _, err := st2.ReserveSupplyRequest(ctx, contracts.HashVirtualKey(plaintext2), "in-debt", "gpt-test", "CNY", nil); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a wallet in debt must be refused, got %v", err)
+	}
+
+	// A partial credit is accepted and reduces the debt without clearing it.
+	partial, _, err := st2.AdjustWalletBalance(ctx, owner2.ID, "CNY", 80_000, "debt-partial", "partial repayment")
+	if err != nil {
+		t.Fatalf("a credit onto a wallet in debt must be accepted: %v", err)
+	}
+	if partial.AvailableMicros != -300_000 {
+		t.Fatalf("the credit must offset the debt, got %d", partial.AvailableMicros)
+	}
+	if _, err := st2.ReserveSupplyRequest(ctx, contracts.HashVirtualKey(plaintext2), "still-in-debt", "gpt-test", "CNY", nil); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a still-negative wallet must stay refused, got %v", err)
+	}
+
+	// Clearing the debt restores service.
+	cleared, _, err := st2.AdjustWalletBalance(ctx, owner2.ID, "CNY", 400_000, "debt-clear", "top up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.AvailableMicros != 100_000 {
+		t.Fatalf("the remainder must land in available funds, got %d", cleared.AvailableMicros)
+	}
+	if _, err := st2.ReserveSupplyRequest(ctx, contracts.HashVirtualKey(plaintext2), "after-clear", "gpt-test", "CNY", nil); err != nil {
+		t.Fatalf("a cleared wallet must be usable again: %v", err)
 	}
 
 	// The ledger still balances once the charge spans both debit sources.

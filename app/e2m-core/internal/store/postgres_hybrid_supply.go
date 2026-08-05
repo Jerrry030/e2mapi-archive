@@ -189,7 +189,7 @@ func (s *PostgresStore) AdjustWalletBalance(ctx context.Context, userID int64, c
 		return contracts.Wallet{}, contracts.WalletJournal{}, err
 	}
 	wallet, err := scanHybridWallet(tx.QueryRow(ctx, `UPDATE wallet_accounts SET available_micros=available_micros+$3,version=version+1,updated_at=$4
-		WHERE user_id=$1 AND currency=$2 AND available_micros+$3>=0
+		WHERE user_id=$1 AND currency=$2 AND ($3 > 0 OR available_micros+$3>=0)
 		RETURNING user_id,currency,available_micros,reserved_micros,version,updated_at`, userID, currency, deltaMicros, now))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return contracts.Wallet{}, contracts.WalletJournal{}, ErrConflict
@@ -866,24 +866,15 @@ func (s *PostgresStore) finishSupplyRequest(ctx context.Context, reservationID s
 		if supplier > charged {
 			return contracts.SupplySettlementResult{}, ErrConflict
 		}
-		// A request that costs more than the hold is charged in full as long as
-		// the wallet can still cover the difference; otherwise it is charged
-		// down to zero. The balance is never allowed to go negative, so the
-		// platform absorbs at most one request's shortfall per drained wallet.
-		if charged > reservation.ReservedMicros {
-			affordable := reservation.ReservedMicros + wallet.AvailableMicros
-			if charged > affordable {
-				charged = affordable
-			}
-			if supplier > charged {
-				supplier = charged
-			}
-		}
+		// A request is charged what it actually cost, even when that exceeds
+		// the hold and the funds left. The shortfall is carried as debt (a
+		// negative available balance) and is offset by the next credit; a
+		// wallet at or below zero cannot start further requests.
 	}
 	released := reservation.ReservedMicros - charged
 	now := nowUTC()
 	wallet, err = scanHybridWallet(tx.QueryRow(ctx, `UPDATE wallet_accounts SET reserved_micros=reserved_micros-$3,
-		available_micros=available_micros+$4,version=version+1,updated_at=$5 WHERE user_id=$1 AND currency=$2 AND reserved_micros >= $3 AND available_micros + $4 >= 0
+		available_micros=available_micros+$4,version=version+1,updated_at=$5 WHERE user_id=$1 AND currency=$2 AND reserved_micros >= $3
 		RETURNING user_id,currency,available_micros,reserved_micros,version,updated_at`, reservation.UserID, reservation.Currency, reservation.ReservedMicros, released, now))
 	if err != nil {
 		return contracts.SupplySettlementResult{}, err

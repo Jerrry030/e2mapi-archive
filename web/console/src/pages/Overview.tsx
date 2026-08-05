@@ -78,8 +78,14 @@ export default function Overview() {
             <StatisticCard
               loading={wallet.isLoading}
               statistic={{
-                title: '钱包余额（CNY）',
-                value: wallet.data ? (wallet.data.available_micros / 1_000_000).toFixed(2) : '--',
+                // A negative balance is debt carried from a request that cost
+                // more than the funds it held.
+                title: wallet.data && wallet.data.available_micros < 0 ? '欠款（CNY）' : '钱包余额（CNY）',
+                value: wallet.data
+                  ? (Math.abs(wallet.data.available_micros) / 1_000_000).toFixed(2)
+                  : '--',
+                valueStyle:
+                  wallet.data && wallet.data.available_micros < 0 ? { color: '#cf1322' } : undefined,
               }}
             />
             <StatisticCard.Divider />
