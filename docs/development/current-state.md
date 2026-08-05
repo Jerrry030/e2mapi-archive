@@ -55,6 +55,9 @@ Core is responsible for these product surfaces:
 - a single E2M wallet balance per downstream user and admin adjustments;
 - OpenAI-compatible `/v1/chat/completions`, metering, accounting, scheduling,
   and retry/failure transfer among compatible upstreams;
+- an Anthropic-compatible `/v1/messages` bridge that serves Messages-protocol
+  clients from the same OpenAI-compatible upstream pool, reservation path,
+  and failover loop (see Platform forwarding);
 - platform usage records and summaries exposed through E2M APIs.
 
 The native platform management contract is:
@@ -70,6 +73,7 @@ GET  /api/v1/platform/keys/{id}/value
 POST /api/v1/platform/wallet-adjustments
 GET  /api/v1/platform/usage
 POST /v1/chat/completions
+POST /v1/messages
 ```
 
 These are E2M contracts. A client must never call a hidden third-party
@@ -134,6 +138,17 @@ The platform request enters E2M directly:
    channel; a failure matching the channel's cooldown rules parks that channel
    for the configured duration;
 7. atomically record usage and apply the final charge/refund outcome in E2M.
+
+`POST /v1/messages` accepts the Anthropic Messages protocol (both `x-api-key`
+and bearer credentials) and bridges it onto the same OpenAI-compatible
+upstream pool: one reservation/settlement path, one failover loop, one
+cooldown state. The request body, response document, SSE event grammar
+(`message_start` through `message_stop`), and error shape are translated at
+the edge; the upstream still receives `/v1/chat/completions`. Requests using
+capabilities the bridge does not translate yet — tool use, or non-text
+content blocks — are rejected with a 400 up front instead of being forwarded
+in a shape the upstream would misread. Streams that end without an upstream
+usage frame settle conservatively, exactly like the OpenAI route.
 
 Model mapping and cooldown rules are configured per upstream in the console
 (structured form sections backed by the `e2m.model_mapping` and
@@ -261,8 +276,9 @@ The following must not be presented as current accepted work:
 - duplicated E2M/third-party users, balances, keys, usage, or management calls;
 - supplier dynamic Offers and dynamic acceptance ratios;
 - supplier payable, withdrawal, or settlement;
-- subscription plans and quota windows, OAuth subscription upstream accounts,
-  or a `/v1/messages` protocol bridge (2026-08-04 decisions);
+- subscription plans and quota windows, or OAuth subscription upstream
+  accounts (2026-08-04 decisions; the `/v1/messages` protocol bridge was
+  un-deferred and shipped on 2026-08-05);
 - MaiBot, cyber-risk review, or content-review services.
 
 Historical database migrations and implementation packages are retained to

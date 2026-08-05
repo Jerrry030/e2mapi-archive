@@ -31,6 +31,7 @@ func TestMountCoreRoutesKeepsSupplyAndConsoleInOneHandler(t *testing.T) {
 		want       string
 	}{
 		{path: "/v1/chat/completions", wantStatus: http.StatusAccepted, want: "supply"},
+		{path: "/v1/messages", wantStatus: http.StatusAccepted, want: "supply"},
 		{path: "/api/v1/auth/me", wantStatus: http.StatusNoContent, want: "console"},
 		{path: "/", wantStatus: http.StatusNoContent, want: "console"},
 	} {

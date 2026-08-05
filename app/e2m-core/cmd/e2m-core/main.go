@@ -216,6 +216,7 @@ func run() error {
 func mountCoreRoutes(console, supply http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/chat/completions", supply)
+	mux.Handle("/v1/messages", supply)
 	mux.Handle("/", console)
 	return mux
 }

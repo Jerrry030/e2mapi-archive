@@ -181,6 +181,7 @@ func (h *Handler) Routes() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("POST /v1/chat/completions", h.handleChatCompletions)
+	mux.HandleFunc("POST /v1/messages", h.handleMessages)
 	return mux
 }
 
