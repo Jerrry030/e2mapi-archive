@@ -5,7 +5,7 @@ import {
   cooldownRowsFromLabel,
   labelsFromForm,
   modelMappingRowsFromLabel,
-  otherLabelsText,
+  preservedLabels,
 } from './upstreamLabels'
 
 describe('upstream label serialization', () => {
@@ -23,55 +23,48 @@ describe('upstream label serialization', () => {
     })
   })
 
-  it('round-trips cooldown rules, splitting and rejoining keywords', () => {
-    const label = JSON.stringify([
-      { status: 429, keywords: ['quota', 'rate limit'], cooldown_seconds: 300 },
-    ])
-    const rows = cooldownRowsFromLabel(label)
-    expect(rows).toEqual([{ status: 429, keywords: 'quota, rate limit', cooldown_seconds: 300 }])
-    const labels = labelsFromForm({ cooldown_rules: rows })
-    expect(JSON.parse(labels[COOLDOWN_RULES_LABEL])).toEqual([
-      { status: 429, keywords: ['quota', 'rate limit'], cooldown_seconds: 300 },
-    ])
-  })
-
-  it('keeps a keyword-free rule as a status-only match', () => {
-    const labels = labelsFromForm({
-      cooldown_rules: [{ status: 503, keywords: '', cooldown_seconds: 60 }],
-    })
-    expect(JSON.parse(labels[COOLDOWN_RULES_LABEL])).toEqual([
-      { status: 503, keywords: [], cooldown_seconds: 60 },
-    ])
-  })
-
-  it('drops incomplete rows instead of writing broken labels', () => {
+  it('drops incomplete mapping rows instead of writing broken labels', () => {
     const labels = labelsFromForm({
       model_mapping: [{ from: 'a', to: '' }, { from: '', to: 'b' }, {}],
-      cooldown_rules: [{ status: 429 }, { cooldown_seconds: 30 }],
     })
     expect(labels[MODEL_MAPPING_LABEL]).toBeUndefined()
-    expect(labels[COOLDOWN_RULES_LABEL]).toBeUndefined()
   })
 
-  it('preserves unrelated labels and never duplicates the managed ones', () => {
+  it('clears the mapping label when every row is removed', () => {
+    const labels = labelsFromForm({
+      preserved_labels: { [MODEL_MAPPING_LABEL]: JSON.stringify({ a: 'b' }), region: 'cn' },
+      model_mapping: [],
+    })
+    expect(labels[MODEL_MAPPING_LABEL]).toBeUndefined()
+    expect(labels.region).toBe('cn')
+  })
+
+  it('preserves labels the form has no editor for, including cooldown rules', () => {
+    // The console dropped the cooldown-rule and free-form label editors, so a
+    // save must carry those stored values through untouched rather than wipe
+    // a capability the data plane still honours.
     const stored = {
-      'region': 'cn',
+      region: 'cn',
+      [COOLDOWN_RULES_LABEL]: JSON.stringify([{ status: 429, keywords: ['quota'], cooldown_seconds: 300 }]),
       [MODEL_MAPPING_LABEL]: JSON.stringify({ a: 'b' }),
-      [COOLDOWN_RULES_LABEL]: JSON.stringify([{ status: 429, cooldown_seconds: 10 }]),
     }
-    const text = otherLabelsText(stored)
-    expect(text).toBe('region=cn')
+    const preserved = preservedLabels(stored)
+    expect(preserved).toEqual({ region: 'cn', [COOLDOWN_RULES_LABEL]: stored[COOLDOWN_RULES_LABEL] })
 
     const labels = labelsFromForm({
-      labels: text,
+      preserved_labels: preserved,
       model_mapping: modelMappingRowsFromLabel(stored[MODEL_MAPPING_LABEL]),
-      cooldown_rules: cooldownRowsFromLabel(stored[COOLDOWN_RULES_LABEL]),
     })
     expect(labels.region).toBe('cn')
+    expect(labels[COOLDOWN_RULES_LABEL]).toBe(stored[COOLDOWN_RULES_LABEL])
     expect(JSON.parse(labels[MODEL_MAPPING_LABEL])).toEqual({ a: 'b' })
-    expect(JSON.parse(labels[COOLDOWN_RULES_LABEL])).toEqual([
-      { status: 429, keywords: [], cooldown_seconds: 10 },
-    ])
+  })
+
+  it('still parses stored cooldown rules for callers that read them', () => {
+    const rows = cooldownRowsFromLabel(
+      JSON.stringify([{ status: 429, keywords: ['quota', 'rate limit'], cooldown_seconds: 300 }]),
+    )
+    expect(rows).toEqual([{ status: 429, keywords: 'quota, rate limit', cooldown_seconds: 300 }])
   })
 
   it('tolerates malformed stored labels instead of crashing the form', () => {
@@ -80,5 +73,6 @@ describe('upstream label serialization', () => {
     expect(cooldownRowsFromLabel('not json')).toEqual([])
     expect(cooldownRowsFromLabel('{"a":1}')).toEqual([])
     expect(modelMappingRowsFromLabel(undefined)).toEqual([])
+    expect(preservedLabels(undefined)).toEqual({})
   })
 })

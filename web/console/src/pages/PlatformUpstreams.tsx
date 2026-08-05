@@ -33,15 +33,15 @@ import {
   useTestPlatformUpstream,
   useUpdatePlatformUpstream,
 } from '../api/platformDistributionHooks'
+import { useQuery } from '@tanstack/react-query'
+import { endpoints } from '../api/endpoints'
 import type { PlatformUpstream } from '../api/types'
 import ModelWhitelistPanel from '../components/ModelWhitelistPanel'
 import {
-  COOLDOWN_RULES_LABEL,
   MODEL_MAPPING_LABEL,
-  cooldownRowsFromLabel,
   labelsFromForm,
   modelMappingRowsFromLabel,
-  otherLabelsText,
+  preservedLabels,
 } from './upstreamLabels'
 import { t } from '../i18n'
 import { useLocaleVersion } from '../i18n/react'
@@ -61,11 +61,55 @@ function Section({ title, desc }: { title: string; desc?: string }) {
   )
 }
 
+// SettingRow lays a control out the way the reference product does: the label
+// and its explanation on the left, the control right-aligned, one per row.
+function SettingRow({
+  title,
+  desc,
+  children,
+}: {
+  title: string
+  desc?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 16,
+        padding: '12px 0',
+        borderBottom: '1px solid rgba(0,0,0,0.06)',
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <Typography.Text>{title}</Typography.Text>
+        {desc ? (
+          <Typography.Paragraph type="secondary" style={{ margin: '2px 0 0', fontSize: 12 }}>
+            {desc}
+          </Typography.Paragraph>
+        ) : null}
+      </div>
+      <div style={{ flexShrink: 0 }}>{children}</div>
+    </div>
+  )
+}
+
 export default function PlatformUpstreams() {
   useLocaleVersion()
   const { message } = App.useApp()
   const groups = usePlatformGroups(true)
   const upstreams = usePlatformUpstreams(true)
+  // Prices are no longer entered by hand, so the base price table is the only
+  // pricing source: surface a missing rate here instead of letting the create
+  // call fail with a backend validation error.
+  const commerce = useQuery({
+    queryKey: ['admin', 'settings', 'commerce'],
+    queryFn: () => endpoints.getCommerceSettings(),
+    retry: false,
+  })
+  const pricingConfigured = Boolean(commerce.data?.usd_to_cny_rate?.trim())
   const createUpstream = useCreatePlatformUpstream()
   const updateUpstream = useUpdatePlatformUpstream()
   const deleteUpstream = useDeletePlatformUpstream()
@@ -105,6 +149,7 @@ export default function PlatformUpstreams() {
       max_request_micros: 1,
       status: 'active',
       models: [],
+      preserved_labels: {},
     })
     setOpen(true)
   }
@@ -135,9 +180,8 @@ export default function PlatformUpstreams() {
         ? upstream.capacity.max_request_micros / 1_000_000
         : undefined,
       status: upstream.status,
-      labels: otherLabelsText(upstream.labels),
+      preserved_labels: preservedLabels(upstream.labels),
       model_mapping: modelMappingRowsFromLabel(upstream.labels?.[MODEL_MAPPING_LABEL]),
-      cooldown_rules: cooldownRowsFromLabel(upstream.labels?.[COOLDOWN_RULES_LABEL]),
     })
     setOpen(true)
   }
@@ -179,7 +223,12 @@ export default function PlatformUpstreams() {
           <Button icon={<ReloadOutlined />} onClick={() => upstreams.refetch()}>
             {t('common.refresh', '刷新')}
           </Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openNew} disabled={!hasActiveGroup}>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={openNew}
+            disabled={!hasActiveGroup || (!commerce.isLoading && !pricingConfigured)}
+          >
             {t('platformUpstreams.new', '接入上游')}
           </Button>
         </Space>
@@ -191,6 +240,18 @@ export default function PlatformUpstreams() {
           showIcon
           style={{ marginBottom: 16 }}
           message={t('platformUpstreams.needGroup', '请先在「分组管理」创建并启用一个分组，再接入上游账号')}
+        />
+      ) : null}
+      {!commerce.isLoading && !pricingConfigured ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('platformUpstreams.needPricing', '尚未配置基准定价，无法接入上游')}
+          description={t(
+            'platformUpstreams.needPricingDesc',
+            '上游售价由「基准价目表 × 汇率 × 分组倍率」自动计算。请先在「系统设置 → 商务定价」填写美元→人民币汇率。',
+          )}
         />
       ) : null}
       <ProCard bordered>
@@ -313,34 +374,15 @@ export default function PlatformUpstreams() {
             const models = ((values.models ?? []) as string[])
               .map((model) => model.trim())
               .filter(Boolean)
-            const hasInputPrice = values.input_price != null && values.input_price > 0
-            const hasOutputPrice = values.output_price != null && values.output_price > 0
-            if (hasInputPrice !== hasOutputPrice) {
-              message.error(
-                t('platformUpstreams.form.priceBothOrNone', '输入价与输出价需同时填写，或同时留空走自动定价'),
-              )
-              return
-            }
-            // Omitted prices mean: base-table auto pricing on create, keep the
-            // current prices on edit. The backend enforces both semantics.
-            const prices = hasInputPrice
-              ? Object.fromEntries(
-                  models.map((model) => [
-                    model,
-                    {
-                      input_micros_per_million: Math.round((values.input_price ?? 0) * 1_000_000),
-                      output_micros_per_million: Math.round((values.output_price ?? 0) * 1_000_000),
-                    },
-                  ]),
-                )
-              : undefined
+            // Prices are owned by the base price table and the group's sell
+            // multiplier, so the form never sends them: the backend applies
+            // auto pricing on create and keeps the stored prices on edit.
             const input = {
               group_id: values.group_id,
               name: values.name,
               base_url: values.base_url,
               ...(values.api_key ? { api_key: values.api_key } : {}),
               models,
-              ...(prices ? { prices } : {}),
               priority: values.priority,
               weight: values.weight,
               status: values.status,
@@ -530,119 +572,63 @@ export default function PlatformUpstreams() {
               )}
             </Form.List>
           </div>
-          <Section
-            title={t('platformUpstreams.form.priceSection', '价格（可选覆盖）')}
-            desc={
-              editingId
-                ? t(
-                    'platformUpstreams.form.priceSectionDescEdit',
-                    '留空保持当前价格；填写则覆盖。自动定价 = 基准价 × 汇率 × 分组倍率。',
-                  )
-                : t(
-                    'platformUpstreams.form.priceSectionDescNew',
-                    '留空时按基准价目表自动定价（基准价 × 汇率 × 分组倍率）；填写则以此为准。',
-                  )
-            }
-          />
-          <Space>
-            <Form.Item name="input_price" label={t('platformUpstreams.form.inputPrice', '输入价（元/百万 Token）')}>
-              <InputNumber min={0} placeholder={t('platformUpstreams.form.priceAuto', '自动')} style={{ width: 180 }} />
-            </Form.Item>
-            <Form.Item name="output_price" label={t('platformUpstreams.form.outputPrice', '输出价（元/百万 Token）')}>
-              <InputNumber min={0} placeholder={t('platformUpstreams.form.priceAuto', '自动')} style={{ width: 180 }} />
-            </Form.Item>
-          </Space>
           <Section title={t('platformUpstreams.form.schedulingSection', '调度')} />
-          <Space wrap>
-            <Form.Item name="priority" label={t('platformUpstreams.form.priority', '优先级')}>
-              <InputNumber min={0} precision={0} />
+          <SettingRow
+            title={t('platformUpstreams.form.priority', '优先级')}
+            desc={t('platformUpstreams.form.priorityDesc', '数字越小越先被选中；同组内按优先级分层调度。')}
+          >
+            <Form.Item name="priority" noStyle>
+              <InputNumber min={0} precision={0} style={{ width: 140 }} />
             </Form.Item>
-            <Form.Item name="weight" label={t('platformUpstreams.form.weight', '权重')}>
-              <InputNumber min={0} precision={0} />
+          </SettingRow>
+          <SettingRow
+            title={t('platformUpstreams.form.weight', '权重')}
+            desc={t('platformUpstreams.form.weightDesc', '同优先级内按权重分配流量。')}
+          >
+            <Form.Item name="weight" noStyle>
+              <InputNumber min={0} precision={0} style={{ width: 140 }} />
             </Form.Item>
-            <Form.Item name="max_concurrency" label={t('platformUpstreams.form.maxConcurrency', '最大并发')}>
-              <InputNumber min={0} precision={0} />
+          </SettingRow>
+          <SettingRow
+            title={t('platformUpstreams.form.maxConcurrency', '最大并发')}
+            desc={t('platformUpstreams.form.maxConcurrencyDesc', '同时进行中的请求数上限；0 表示不限制。')}
+          >
+            <Form.Item name="max_concurrency" noStyle>
+              <InputNumber min={0} precision={0} style={{ width: 140 }} />
             </Form.Item>
-            <Form.Item name="capacity_percent" label={t('platformUpstreams.form.capacityPercent', '容量百分比')}>
-              <InputNumber min={0} max={100} precision={0} />
+          </SettingRow>
+          <SettingRow
+            title={t('platformUpstreams.form.capacityPercent', '容量百分比')}
+            desc={t('platformUpstreams.form.capacityPercentDesc', '参与调度的容量比例；0 表示暂不接量。')}
+          >
+            <Form.Item name="capacity_percent" noStyle>
+              <InputNumber min={0} max={100} precision={0} style={{ width: 140 }} />
             </Form.Item>
-            <Form.Item name="max_request_micros" label={t('platformUpstreams.form.maxRequest', '单请求上限（元）')}>
-              <InputNumber min={0.000001} precision={6} />
+          </SettingRow>
+          <SettingRow
+            title={t('platformUpstreams.form.maxRequest', '单请求上限（元）')}
+            desc={t('platformUpstreams.form.maxRequestDesc', '单次请求预扣的金额上限，超出的请求不会被调度到这里。')}
+          >
+            <Form.Item name="max_request_micros" noStyle>
+              <InputNumber min={0.000001} precision={6} style={{ width: 140 }} />
             </Form.Item>
-          </Space>
+          </SettingRow>
           {editingId ? (
-            <Form.Item name="status" label={t('platformUpstreams.form.status', '状态')}>
-              <Select
-                options={[
-                  { value: 'active', label: t('platformGroups.status.active', '启用') },
-                  { value: 'maintenance', label: t('platformGroups.status.maintenance', '维护中') },
-                ]}
-              />
-            </Form.Item>
+            <SettingRow
+              title={t('platformUpstreams.form.status', '状态')}
+              desc={t('platformUpstreams.form.statusDesc', '维护中的上游保留配置但不参与调度。')}
+            >
+              <Form.Item name="status" noStyle>
+                <Select
+                  style={{ width: 140 }}
+                  options={[
+                    { value: 'active', label: t('platformGroups.status.active', '启用') },
+                    { value: 'maintenance', label: t('platformGroups.status.maintenance', '维护中') },
+                  ]}
+                />
+              </Form.Item>
+            </SettingRow>
           ) : null}
-          <Section
-            title={t('platformUpstreams.form.cooldownTitle', '错误冷却规则（可选）')}
-            desc={t(
-              'platformUpstreams.form.cooldownHint',
-              '命中的错误会让该上游临时退出调度，冷却期内新请求自动避开。关键词留空表示只匹配状态码。',
-            )}
-          />
-          <Form.List name="cooldown_rules">
-            {(fields, { add, remove }) => (
-              <>
-                {fields.map((field) => (
-                  <Space key={field.key} align="baseline" wrap style={{ display: 'flex', marginBottom: 8 }}>
-                    <Form.Item
-                      name={[field.name, 'status']}
-                      noStyle
-                      rules={[{ required: true, message: t('platformUpstreams.form.cooldownStatusRequired', '请填写状态码') }]}
-                    >
-                      <InputNumber
-                        min={100}
-                        max={599}
-                        precision={0}
-                        style={{ width: 110 }}
-                        placeholder={t('platformUpstreams.form.cooldownStatus', '状态码')}
-                      />
-                    </Form.Item>
-                    <Form.Item name={[field.name, 'keywords']} noStyle>
-                      <Input
-                        style={{ width: 260 }}
-                        placeholder={t('platformUpstreams.form.cooldownKeywords', '关键词（逗号分隔，可空）')}
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      name={[field.name, 'cooldown_seconds']}
-                      noStyle
-                      rules={[{ required: true, message: t('platformUpstreams.form.cooldownSecondsRequired', '请填写冷却秒数') }]}
-                    >
-                      <InputNumber
-                        min={1}
-                        max={86400}
-                        precision={0}
-                        style={{ width: 140 }}
-                        placeholder={t('platformUpstreams.form.cooldownSeconds', '冷却秒数')}
-                      />
-                    </Form.Item>
-                    <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
-                  </Space>
-                ))}
-                <Button
-                  type="dashed"
-                  block
-                  icon={<PlusOutlined />}
-                  onClick={() => add({ status: 429, keywords: '', cooldown_seconds: 300 })}
-                >
-                  {t('platformUpstreams.form.cooldownAdd', '添加规则')}
-                </Button>
-              </>
-            )}
-          </Form.List>
-
-          <Section title={t('platformUpstreams.form.advanced', '其他')} />
-          <Form.Item name="labels" label={t('platformUpstreams.form.labels', '标签（key=value，逗号分隔）')}>
-            <Input placeholder="region=cn, lane=primary" />
-          </Form.Item>
         </Form>
       </Modal>
     </PageContainer>

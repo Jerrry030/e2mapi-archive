@@ -56,21 +56,23 @@ export function cooldownRowsFromLabel(raw?: string): CooldownRuleRow[] {
   }
 }
 
-// otherLabelsText renders every label except the two managed by dedicated
-// form sections, so round-tripping never duplicates or drops them.
-export function otherLabelsText(labels?: Record<string, string>): string {
-  return Object.entries(labels ?? {})
-    .filter(([key]) => key !== MODEL_MAPPING_LABEL && key !== COOLDOWN_RULES_LABEL)
-    .map(([key, value]) => `${key}=${value}`)
-    .join(', ')
+// preservedLabels carries every label the form has no editor for. The console
+// only edits the model mapping, so anything else an operator or an earlier
+// build stored (cooldown rules, routing hints) must survive a save untouched
+// rather than be silently dropped.
+export function preservedLabels(labels?: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(labels ?? {})) {
+    if (key !== MODEL_MAPPING_LABEL) out[key] = value
+  }
+  return out
 }
 
 export function labelsFromForm(values: {
-  labels?: string
+  preserved_labels?: Record<string, string>
   model_mapping?: ModelMappingRow[]
-  cooldown_rules?: CooldownRuleRow[]
 }): Record<string, string> {
-  const labels = parseLabels(values.labels)
+  const labels = { ...(values.preserved_labels ?? {}) }
   const mapping: Record<string, string> = {}
   for (const row of values.model_mapping ?? []) {
     const from = row?.from?.trim()
@@ -78,17 +80,6 @@ export function labelsFromForm(values: {
     if (from && to) mapping[from] = to
   }
   if (Object.keys(mapping).length) labels[MODEL_MAPPING_LABEL] = JSON.stringify(mapping)
-
-  const rules = (values.cooldown_rules ?? [])
-    .filter((row) => row?.status && row?.cooldown_seconds)
-    .map((row) => ({
-      status: Number(row.status),
-      keywords: String(row.keywords ?? '')
-        .split(',')
-        .map((keyword) => keyword.trim())
-        .filter(Boolean),
-      cooldown_seconds: Number(row.cooldown_seconds),
-    }))
-  if (rules.length) labels[COOLDOWN_RULES_LABEL] = JSON.stringify(rules)
+  else delete labels[MODEL_MAPPING_LABEL]
   return labels
 }
