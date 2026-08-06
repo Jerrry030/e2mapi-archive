@@ -62,8 +62,15 @@ POST           /api/v1/platform/wallet-adjustments
 GET            /api/v1/platform/usage
 GET            /api/v1/platform/pricing/preview
 GET            /api/v1/platform/model-market
+GET            /v1/models
 POST           /v1/chat/completions
+POST           /v1/messages
 ```
+
+E2M owns the whole `/v1/` 子树：未实现的端点返回 JSON `404 unknown_endpoint`，
+方法不匹配返回带 `Allow` 头的 `405`，都不会落到控制台 SPA。`GET /v1/models`
+按调度器同一套候选谓词计算，因此列出的模型就是能调用的模型；它不预扣，也不看
+钱包余额（余额为零也能先看清能买什么）。
 
 商业化契约（受 `E2M_ENABLE_PAYMENTS` 门禁，关闭时返回 `404 feature_disabled`）：
 

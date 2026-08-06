@@ -88,6 +88,11 @@ type Store interface {
 	UpsertSupplyChannelEndpoint(ctx context.Context, input contracts.SupplyChannelEndpoint) (contracts.SupplyChannelEndpoint, error)
 	GetSupplyChannelEndpoint(ctx context.Context, channelID string) (contracts.SupplyChannelEndpoint, error)
 	ListSupplyCandidates(ctx context.Context, class contracts.ResourceClass, model string) ([]contracts.SupplyCandidate, error)
+	// ListSupplyModels is the read-only projection of the same eligibility
+	// predicate ListSupplyCandidates and ReserveSupplyRequest apply. It sits
+	// next to them so the three stay in sync: a model this returns must be a
+	// model the reservation would accept.
+	ListSupplyModels(ctx context.Context, tokenHash, currency string) (contracts.SupplyModelCatalog, error)
 	GetSupplyDailyUsage(ctx context.Context, userID int64, instanceID, virtualKeyID, currency string) (contracts.SupplyDailyUsage, error)
 	ListSupplyUsage(ctx context.Context, filter contracts.SupplyUsageFilter) ([]contracts.SupplyUsageRecord, error)
 	ReserveSupplyRequest(ctx context.Context, tokenHash, requestID, model, currency string, excludedChannelIDs []string) (contracts.SupplyReservationResult, error)

@@ -97,8 +97,29 @@ POST /api/v1/platform/keys
 GET  /api/v1/platform/keys/{id}/value
 POST /api/v1/platform/wallet-adjustments
 GET  /api/v1/platform/usage
+GET  /v1/models
 POST /v1/chat/completions
+POST /v1/messages
 ```
+
+E2M owns the whole `/v1/` subtree. An endpoint E2M does not implement answers
+`404 unknown_endpoint` as JSON, and a wrong method answers `405` with an
+`Allow` header; neither falls through to the console SPA.
+
+`GET /v1/models` lists the models the presented key can actually call. It is
+computed from the same eligibility predicate the scheduler reserves against, so
+a listed model is a callable model. It never reserves, and it deliberately
+ignores the wallet balance so a customer can discover the catalog before
+topping up. When an in-scope pool and channel both declare an empty model
+array they accept any model, and the response marks itself incomplete with
+`"e2m_catalog_complete": false` rather than implying the list is exhaustive.
+
+Model ids are grouped case-insensitively but reported with a declared spelling,
+never folded: the upstream is the authority on an id such as
+`Qwen/Qwen2.5-7B-Instruct`, and a folded id both misses the channel's
+case-sensitive `e2m.model_mapping` lookup and can be rejected by the upstream.
+The catalog is also scoped to the gateway currency, because a channel priced in
+another currency is rejected after selection and cannot serve any request.
 
 Platform groups are the V1 product/access boundary. A downstream key belongs
 to one E2M user and one group; it never reveals an upstream credential. Normal
@@ -180,8 +201,9 @@ flows without an explicit later decision.
 - no Connector in the platform request path;
 - no separate Sub2API data plane or management plane;
 - no supplier-finance workflow (payable, settlement, withdrawal);
-- no subscription plans or quota windows, no OAuth subscription upstream
-  accounts, no `/v1/messages` protocol bridge (2026-08-04 decisions);
+- no subscription plans or quota windows, and no OAuth subscription upstream
+  accounts (2026-08-04 decisions). The `/v1/messages` protocol bridge was
+  un-deferred and shipped on 2026-08-05; it is no longer a non-goal;
 - no upstream content/cyber review or MaiBot runtime;
 - no promise that error transfer can succeed without a healthy compatible
   upstream.

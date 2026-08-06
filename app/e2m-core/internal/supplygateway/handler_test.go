@@ -31,6 +31,21 @@ type fakeStore struct {
 	settleErr          error
 	conservativeErr    error
 	releaseErr         error
+	catalog            contracts.SupplyModelCatalog
+	catalogHashes      []string
+	catalogCurrencies  []string
+	catalogErr         error
+}
+
+func (f *fakeStore) ListSupplyModels(_ context.Context, hash, currency string) (contracts.SupplyModelCatalog, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.catalogHashes = append(f.catalogHashes, hash)
+	f.catalogCurrencies = append(f.catalogCurrencies, currency)
+	if f.catalogErr != nil {
+		return contracts.SupplyModelCatalog{}, f.catalogErr
+	}
+	return f.catalog, nil
 }
 
 func (f *fakeStore) ReserveSupplyRequest(_ context.Context, hash, requestID, _, _ string, excludedChannelIDs []string) (contracts.SupplyReservationResult, error) {

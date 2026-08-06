@@ -526,6 +526,123 @@ func (s *MemoryStore) listSupplyCandidatesLocked(class contracts.ResourceClass, 
 	return out
 }
 
+// ListSupplyModels mirrors the Postgres projection. It walks the same pools,
+// channels and endpoints listSupplyCandidatesLocked walks, so the catalog it
+// returns matches what this backend's ReserveSupplyRequest would accept.
+func (s *MemoryStore) ListSupplyModels(ctx context.Context, tokenHash, currency string) (contracts.SupplyModelCatalog, error) {
+	if err := ctx.Err(); err != nil {
+		return contracts.SupplyModelCatalog{}, err
+	}
+	tokenHash = strings.TrimSpace(tokenHash)
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if tokenHash == "" || !validCurrency(currency) {
+		return contracts.SupplyModelCatalog{}, ErrInvalid
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var key contracts.VirtualKey
+	var found bool
+	for _, current := range s.virtualKeys {
+		if current.TokenHash == tokenHash {
+			key, found = current, true
+			break
+		}
+	}
+	if !found || !key.Enabled || key.ExpiresAt != nil && !s.now().Before(*key.ExpiresAt) {
+		return contracts.SupplyModelCatalog{}, ErrNotFound
+	}
+	userEligible := false
+	for _, user := range s.users {
+		if user.ID == key.UserID {
+			userEligible = user.Enabled && (userHasRole(user.Roles, contracts.UserRoleClient) || userHasRole(user.Roles, contracts.UserRoleAdmin))
+			break
+		}
+	}
+	if !userEligible {
+		return contracts.SupplyModelCatalog{}, ErrNotFound
+	}
+
+	// Models group case-insensitively but are reported with a DECLARED
+	// spelling: the upstream is the authority on a model id, and a folded id
+	// both misses the channel's case-sensitive model mapping and can be
+	// rejected outright by the upstream. Picking the lexicographic minimum
+	// matches the Postgres backend's min(m.value).
+	type aggregate struct {
+		declared  string
+		firstSeen time.Time
+		channels  map[string]bool
+	}
+	served := map[string]*aggregate{}
+	var wildcard contracts.SupplyModelEntry
+	wildcardChannels := map[string]bool{}
+	record := func(bucket map[string]*aggregate, model string, channel contracts.UpstreamChannel) {
+		model = strings.TrimSpace(model)
+		lowered := strings.ToLower(model)
+		if lowered == "" {
+			return
+		}
+		entry, ok := bucket[lowered]
+		if !ok {
+			entry = &aggregate{declared: model, firstSeen: channel.CreatedAt, channels: map[string]bool{}}
+			bucket[lowered] = entry
+		}
+		if model < entry.declared {
+			entry.declared = model
+		}
+		if channel.CreatedAt.Before(entry.firstSeen) {
+			entry.firstSeen = channel.CreatedAt
+		}
+		entry.channels[channel.ID] = true
+	}
+	for _, pool := range s.upstreamPools {
+		if pool.ResourceClass != key.ResourceClass || pool.DeliveryMode != contracts.UpstreamDeliverySupplyGateway ||
+			pool.Status != contracts.UpstreamPoolActive || key.GroupID != "" && pool.ID != key.GroupID {
+			continue
+		}
+		for _, channel := range s.upstreamChannels {
+			endpoint, ok := s.supplyEndpoints[channel.ID]
+			if channel.PoolID != pool.ID || !ok || channel.Status != contracts.UpstreamChannelActive ||
+				!channel.IsInventoryReady() || !endpoint.Enabled || endpoint.CapacityPercent == 0 ||
+				endpoint.Currency != currency {
+				continue
+			}
+			// Both arrays empty means this pair accepts any model, so it can
+			// never be enumerated — only counted.
+			if len(pool.Models) == 0 && len(channel.Models) == 0 {
+				wildcardChannels[channel.ID] = true
+				if wildcard.CreatedAt.IsZero() || channel.CreatedAt.Before(wildcard.CreatedAt) {
+					wildcard.CreatedAt = channel.CreatedAt
+				}
+				continue
+			}
+			// Otherwise the pair serves the intersection of whichever arrays
+			// are declared, matching the two independent gates in the
+			// Postgres candidate query.
+			declared := pool.Models
+			if len(declared) == 0 {
+				declared = channel.Models
+			}
+			for _, model := range declared {
+				if containsModel(pool.Models, model) && containsModel(channel.Models, model) {
+					record(served, model, channel)
+				}
+			}
+		}
+	}
+	wildcard.Channels = len(wildcardChannels)
+	entries := make([]contracts.SupplyModelEntry, 0, len(served))
+	for _, entry := range served {
+		entries = append(entries, contracts.SupplyModelEntry{
+			Model: entry.declared, CreatedAt: entry.firstSeen, Channels: len(entry.channels),
+		})
+	}
+	// Order case-insensitively to match the Postgres backend's ORDER BY lower().
+	sort.Slice(entries, func(i, j int) bool {
+		return strings.ToLower(entries[i].Model) < strings.ToLower(entries[j].Model)
+	})
+	return buildSupplyModelCatalog(key.Models, entries, wildcard), nil
+}
+
 func containsModel(models []string, target string) bool {
 	if len(models) == 0 {
 		return true

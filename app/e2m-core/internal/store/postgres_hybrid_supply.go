@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -442,6 +443,158 @@ func (s *PostgresStore) ListSupplyCandidates(ctx context.Context, class contract
 		out = append(out, candidate)
 	}
 	return out, rows.Err()
+}
+
+// ListSupplyModels enumerates the models the given virtual key can call right
+// now. It deliberately reuses the eligibility predicate from
+// getSupplyCandidateTx so the catalog cannot advertise a model the reservation
+// would then reject with ErrNoSupply.
+//
+// Two gates are deliberately NOT applied. The wallet balance is ignored, so a
+// customer with an empty wallet can still discover what they could buy. The
+// per-channel max_concurrency headroom is ignored, because a channel that is
+// momentarily full still serves the model a moment later; the catalog
+// describes capability, not instantaneous free capacity.
+//
+// The endpoint currency IS applied: a channel priced in another currency is
+// rejected by ReserveSupplyRequest after selection, so listing its models would
+// advertise a model that answers 400 on every call.
+func (s *PostgresStore) ListSupplyModels(ctx context.Context, tokenHash, currency string) (contracts.SupplyModelCatalog, error) {
+	tokenHash = strings.TrimSpace(tokenHash)
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if tokenHash == "" || !validCurrency(currency) {
+		return contracts.SupplyModelCatalog{}, ErrInvalid
+	}
+	// Key and owner gates mirror ReserveSupplyRequest, minus the row lock: this
+	// is a read path and must not take FOR UPDATE on virtual_keys.
+	key, err := scanVirtualKey(s.pool.QueryRow(ctx, `SELECT `+virtualKeyColumns+` FROM virtual_keys WHERE token_hash=$1`, tokenHash))
+	if err != nil {
+		return contracts.SupplyModelCatalog{}, mapNotFound(err)
+	}
+	if !key.Enabled || key.ExpiresAt != nil && !nowUTC().Before(*key.ExpiresAt) {
+		return contracts.SupplyModelCatalog{}, ErrNotFound
+	}
+	var userEligible bool
+	if err := s.pool.QueryRow(ctx, `SELECT enabled AND ('client'=ANY(roles) OR 'admin'=ANY(roles)) FROM users WHERE id=$1`, key.UserID).Scan(&userEligible); err != nil {
+		return contracts.SupplyModelCatalog{}, mapNotFound(err)
+	}
+	if !userEligible {
+		return contracts.SupplyModelCatalog{}, ErrNotFound
+	}
+
+	// The serving set of one (pool, channel) pair is the INTERSECTION of the
+	// two model arrays, because getSupplyCandidateTx applies both EXISTS gates
+	// independently. An empty array on either side means "no restriction from
+	// this side", so the CASE picks whichever side is declared. A union across
+	// the two arrays would over-advertise and hand out models that fail.
+	//
+	// Models are grouped case-insensitively but reported with a DECLARED
+	// spelling, never folded. The upstream is the authority on a model id:
+	// "Qwen/Qwen2.5-7B-Instruct" folded to lower case reserves fine (both
+	// comparisons use lower()) and is then rejected by the upstream, and it
+	// also misses the channel's case-sensitive e2m.model_mapping lookup.
+	const serving = `
+		WITH eligible AS (
+			SELECT c.id AS channel_id, c.created_at, p.models AS pool_models, c.models AS channel_models
+			FROM upstream_pools p
+			JOIN upstream_channels c ON c.pool_id=p.id
+			JOIN supply_channel_endpoints e ON e.channel_id=c.id
+			WHERE p.resource_class=$1 AND p.delivery_mode='supply_gateway' AND p.status='active'
+			AND c.status='active' AND c.inventory_state='ready'
+			AND e.enabled AND e.capacity_percent>0 AND e.currency=$3 AND ($2='' OR p.id=$2)
+		)
+		SELECT min(m.value) AS model, min(eligible.created_at) AS first_seen, count(DISTINCT eligible.channel_id) AS channels
+		FROM eligible
+		CROSS JOIN LATERAL jsonb_array_elements_text(
+			CASE WHEN eligible.pool_models='[]'::jsonb THEN eligible.channel_models ELSE eligible.pool_models END) m(value)
+		WHERE (eligible.pool_models='[]'::jsonb OR EXISTS (
+				SELECT 1 FROM jsonb_array_elements_text(eligible.pool_models) x(value) WHERE lower(x.value)=lower(m.value)))
+		AND (eligible.channel_models='[]'::jsonb OR EXISTS (
+				SELECT 1 FROM jsonb_array_elements_text(eligible.channel_models) x(value) WHERE lower(x.value)=lower(m.value)))
+		GROUP BY lower(m.value)
+		ORDER BY lower(m.value)`
+	rows, err := s.pool.Query(ctx, serving, string(key.ResourceClass), key.GroupID, currency)
+	if err != nil {
+		return contracts.SupplyModelCatalog{}, err
+	}
+	defer rows.Close()
+	entries := []contracts.SupplyModelEntry{}
+	for rows.Next() {
+		var entry contracts.SupplyModelEntry
+		if err := rows.Scan(&entry.Model, &entry.CreatedAt, &entry.Channels); err != nil {
+			return contracts.SupplyModelCatalog{}, err
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return contracts.SupplyModelCatalog{}, err
+	}
+
+	// A pair where both arrays are empty accepts any model at all, so the
+	// catalog cannot claim to be exhaustive. Count those channels too, so a
+	// model only a wildcard upstream serves still reports real provenance.
+	var wildcard contracts.SupplyModelEntry
+	var firstSeen *time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT count(DISTINCT c.id), min(c.created_at)
+		FROM upstream_pools p
+		JOIN upstream_channels c ON c.pool_id=p.id
+		JOIN supply_channel_endpoints e ON e.channel_id=c.id
+		WHERE p.resource_class=$1 AND p.delivery_mode='supply_gateway' AND p.status='active'
+		AND c.status='active' AND c.inventory_state='ready'
+		AND e.enabled AND e.capacity_percent>0 AND e.currency=$3 AND ($2='' OR p.id=$2)
+		AND p.models='[]'::jsonb AND c.models='[]'::jsonb`,
+		string(key.ResourceClass), key.GroupID, currency).Scan(&wildcard.Channels, &firstSeen); err != nil {
+		return contracts.SupplyModelCatalog{}, err
+	}
+	if firstSeen != nil {
+		wildcard.CreatedAt = *firstSeen
+	}
+	return buildSupplyModelCatalog(key.Models, entries, wildcard), nil
+}
+
+// buildSupplyModelCatalog applies the key's own model allowlist to the models
+// the pool and channels can serve, and decides whether the result is complete.
+// It is shared by both store backends so the two cannot drift.
+// wildcard carries the channel count and earliest creation time of the
+// upstreams that accept any model; a zero Channels means there are none.
+func buildSupplyModelCatalog(keyModels []string, served []contracts.SupplyModelEntry, wildcard contracts.SupplyModelEntry) contracts.SupplyModelCatalog {
+	catalog := contracts.SupplyModelCatalog{Models: []contracts.SupplyModelEntry{}}
+	if len(keyModels) == 0 {
+		// The key imposes no allowlist, so the upstreams alone decide. Only
+		// then can a wildcard upstream make the catalog non-exhaustive.
+		catalog.Models = append(catalog.Models, served...)
+		catalog.Unenumerable = wildcard.Channels > 0
+		return catalog
+	}
+	// The key names its models, so the catalog is always exhaustive: it is the
+	// key's list narrowed to what some upstream can actually serve. A wildcard
+	// upstream serves every name the key allows.
+	index := make(map[string]contracts.SupplyModelEntry, len(served))
+	for _, entry := range served {
+		index[strings.ToLower(entry.Model)] = entry
+	}
+	seen := make(map[string]bool, len(keyModels))
+	for _, model := range keyModels {
+		model = strings.TrimSpace(model)
+		lowered := strings.ToLower(model)
+		if model == "" || seen[lowered] {
+			continue
+		}
+		seen[lowered] = true
+		if entry, ok := index[lowered]; ok {
+			catalog.Models = append(catalog.Models, entry)
+			continue
+		}
+		if wildcard.Channels > 0 {
+			catalog.Models = append(catalog.Models, contracts.SupplyModelEntry{
+				Model: model, CreatedAt: wildcard.CreatedAt, Channels: wildcard.Channels,
+			})
+		}
+	}
+	sort.Slice(catalog.Models, func(i, j int) bool {
+		return strings.ToLower(catalog.Models[i].Model) < strings.ToLower(catalog.Models[j].Model)
+	})
+	return catalog
 }
 
 func (s *PostgresStore) GetSupplyDailyUsage(ctx context.Context, userID int64, instanceID, virtualKeyID, currency string) (contracts.SupplyDailyUsage, error) {

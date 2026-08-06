@@ -618,6 +618,31 @@ type SupplyCandidate struct {
 	Active   int                   `json:"active_requests"`
 }
 
+// SupplyModelEntry is one callable model in a downstream key's catalog.
+// CreatedAt is the earliest creation time among the channels currently able to
+// serve the model, so the value is real provenance rather than a placeholder.
+// Channels counts how many upstreams back the model right now, which is the
+// depth of supply behind it.
+type SupplyModelEntry struct {
+	Model     string    `json:"model"`
+	CreatedAt time.Time `json:"created_at"`
+	Channels  int       `json:"channels"`
+}
+
+// SupplyModelCatalog is the set of models a virtual key can actually call at
+// this moment, computed from the same eligibility predicate the scheduler uses
+// to reserve. Advertising anything the scheduler would reject is the failure
+// mode this type exists to prevent.
+//
+// Unenumerable reports the one configuration that genuinely cannot be listed:
+// an eligible pool and channel that both declare an empty model array, which
+// means "allow any model". The catalog then holds every model E2M can still
+// name, and callers must not present it as exhaustive.
+type SupplyModelCatalog struct {
+	Models       []SupplyModelEntry `json:"models"`
+	Unenumerable bool               `json:"unenumerable"`
+}
+
 type SupplyReservationResult struct {
 	Key         VirtualKey        `json:"key"`
 	Candidate   SupplyCandidate   `json:"candidate"`

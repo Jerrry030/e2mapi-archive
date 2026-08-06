@@ -215,8 +215,10 @@ func run() error {
 // fallback without changing any existing control-plane API route.
 func mountCoreRoutes(console, supply http.Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/v1/chat/completions", supply)
-	mux.Handle("/v1/messages", supply)
+	// Mount the whole subtree, not the individual endpoints: an unimplemented
+	// /v1/* path must get the data plane's JSON 404 rather than falling
+	// through to the console SPA, which answers 200 with index.html.
+	mux.Handle("/v1/", supply)
 	mux.Handle("/", console)
 	return mux
 }

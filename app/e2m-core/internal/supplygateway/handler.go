@@ -25,6 +25,7 @@ import (
 const maxRequestBody = 8 << 20
 
 type Store interface {
+	ListSupplyModels(context.Context, string, string) (contracts.SupplyModelCatalog, error)
 	ReserveSupplyRequest(context.Context, string, string, string, string, []string) (contracts.SupplyReservationResult, error)
 	SettleSupplyRequest(context.Context, string, int64, int64) (contracts.SupplySettlementResult, error)
 	SettleSupplyRequestConservatively(context.Context, string, string) (contracts.SupplySettlementResult, error)
@@ -182,7 +183,87 @@ func (h *Handler) Routes() http.Handler {
 	})
 	mux.HandleFunc("POST /v1/chat/completions", h.handleChatCompletions)
 	mux.HandleFunc("POST /v1/messages", h.handleMessages)
+	mux.HandleFunc("GET /v1/models", h.handleListModels)
+	// The whole /v1/ subtree belongs to the data plane, so an unimplemented
+	// endpoint answers a JSON 404 here. Without this the request falls through
+	// to the console router, which serves index.html with a 200 — an OpenAI
+	// client then tries to parse HTML as JSON and reports an unrelated error.
+	mux.HandleFunc("/v1/", h.handleUnknownEndpoint)
 	return mux
+}
+
+// dataPlaneMethods lists the methods each implemented endpoint accepts, so a
+// method mismatch answers 405 with a correct Allow header instead of being
+// reported as a missing endpoint.
+var dataPlaneMethods = map[string]string{
+	"/v1/chat/completions": http.MethodPost,
+	"/v1/messages":         http.MethodPost,
+	"/v1/models":           http.MethodGet,
+}
+
+func (h *Handler) handleUnknownEndpoint(w http.ResponseWriter, r *http.Request) {
+	// Match on the same string ServeMux matched. r.URL.Path is decoded, so a
+	// percent-encoded separator such as /v1/chat%2Fcompletions arrives here as
+	// a two-segment path that never matched the real route, yet would look
+	// like it in the decoded form and answer "POST ... accepts POST".
+	path := r.URL.EscapedPath()
+	if allowed, ok := dataPlaneMethods[path]; ok && r.Method != allowed {
+		w.Header().Set("Allow", allowed)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+			fmt.Sprintf("%s accepts %s", path, allowed))
+		return
+	}
+	writeError(w, http.StatusNotFound, "unknown_endpoint",
+		fmt.Sprintf("E2M does not implement %s", path))
+}
+
+type modelObject struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+// handleListModels answers the OpenAI model-list contract with the models this
+// key can actually call. The catalog comes from the same predicate the
+// scheduler reserves against, so a listed model is a callable model.
+//
+// This route never reserves. Probing availability by reserving and releasing
+// would write a wallet reservation, a usage record and a balanced journal pair
+// for a request that never happened.
+func (h *Handler) handleListModels(w http.ResponseWriter, r *http.Request) {
+	token, ok := messagesToken(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "invalid_api_key", "a valid E2M virtual key is required")
+		return
+	}
+	catalog, err := h.store.ListSupplyModels(r.Context(), contracts.HashVirtualKey(token), h.currency)
+	if err != nil {
+		h.writeStoreError(w, err)
+		return
+	}
+	data := make([]modelObject, 0, len(catalog.Models))
+	for _, entry := range catalog.Models {
+		// A zero timestamp would render as a large negative epoch, which some
+		// clients reject outright. Report 0 for "unknown" instead.
+		created := int64(0)
+		if !entry.CreatedAt.IsZero() {
+			created = entry.CreatedAt.Unix()
+		}
+		data = append(data, modelObject{
+			ID:      entry.Model,
+			Object:  "model",
+			Created: created,
+			OwnedBy: "e2m",
+		})
+	}
+	payload := map[string]any{"object": "list", "data": data}
+	if catalog.Unenumerable {
+		// An upstream in scope accepts any model name, so the list is a
+		// best-effort sample. Saying so is better than implying it is complete.
+		payload["e2m_catalog_complete"] = false
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 type chatRequest struct {

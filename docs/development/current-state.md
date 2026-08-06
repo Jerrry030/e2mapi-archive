@@ -53,6 +53,9 @@ Core is responsible for these product surfaces:
 - E2M downstream API key creation, validation, and controlled Vault-backed
   value retrieval;
 - a single E2M wallet balance per downstream user and admin adjustments;
+- an authoritative `GET /v1/models` catalog listing exactly the models the
+  presented key can call, computed from the scheduler's own eligibility
+  predicate, reserving nothing and independent of wallet balance;
 - OpenAI-compatible `/v1/chat/completions`, metering, accounting, scheduling,
   and retry/failure transfer among compatible upstreams;
 - an Anthropic-compatible `/v1/messages` bridge that serves Messages-protocol
@@ -72,9 +75,17 @@ POST /api/v1/platform/keys
 GET  /api/v1/platform/keys/{id}/value
 POST /api/v1/platform/wallet-adjustments
 GET  /api/v1/platform/usage
+GET  /v1/models
 POST /v1/chat/completions
 POST /v1/messages
 ```
+
+Core owns the entire `/v1/` subtree, not just the endpoints it implements.
+An unimplemented path answers `404 unknown_endpoint` as JSON and a wrong method
+answers `405` with an `Allow` header. Routing only the implemented endpoints
+previously let everything else reach the console SPA, which replied `200` with
+`index.html`; a client then parsed HTML as JSON and reported an unrelated
+failure.
 
 These are E2M contracts. A client must never call a hidden third-party
 management API as part of provisioning or acceptance.

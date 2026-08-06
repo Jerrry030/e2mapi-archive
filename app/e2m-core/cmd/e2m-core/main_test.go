@@ -32,6 +32,12 @@ func TestMountCoreRoutesKeepsSupplyAndConsoleInOneHandler(t *testing.T) {
 	}{
 		{path: "/v1/chat/completions", wantStatus: http.StatusAccepted, want: "supply"},
 		{path: "/v1/messages", wantStatus: http.StatusAccepted, want: "supply"},
+		{path: "/v1/models", wantStatus: http.StatusAccepted, want: "supply"},
+		// The whole /v1/ subtree must reach the data plane. Routing only the
+		// implemented endpoints sent everything else to the console SPA, which
+		// answered 200 with index.html instead of a JSON 404.
+		{path: "/v1/embeddings", wantStatus: http.StatusAccepted, want: "supply"},
+		{path: "/v1/anything/at/all", wantStatus: http.StatusAccepted, want: "supply"},
 		{path: "/api/v1/auth/me", wantStatus: http.StatusNoContent, want: "console"},
 		{path: "/", wantStatus: http.StatusNoContent, want: "console"},
 	} {
@@ -40,6 +46,15 @@ func TestMountCoreRoutesKeepsSupplyAndConsoleInOneHandler(t *testing.T) {
 		if recorder.Code != test.wantStatus || recorder.Header().Get("X-Handler") != test.want {
 			t.Errorf("path %s: status=%d handler=%q", test.path, recorder.Code, recorder.Header().Get("X-Handler"))
 		}
+	}
+
+	// Mounting the subtree makes the bare namespace redirect into it. That is
+	// the desired outcome: an API client with a truncated base URL lands on the
+	// data plane's JSON 404 rather than on console HTML.
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1", nil))
+	if recorder.Code != http.StatusTemporaryRedirect || recorder.Header().Get("Location") != "/v1/" {
+		t.Errorf("/v1: status=%d location=%q, want 307 -> /v1/", recorder.Code, recorder.Header().Get("Location"))
 	}
 }
 
