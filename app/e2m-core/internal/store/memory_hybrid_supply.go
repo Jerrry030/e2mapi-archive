@@ -741,6 +741,7 @@ func (s *MemoryStore) ReserveSupplyRequest(ctx context.Context, tokenHash, reque
 	if len(candidates) == 0 {
 		return contracts.SupplyReservationResult{}, ErrNoSupply
 	}
+	s.rankSupplyCandidatesLocked(candidates, key.RoutingPreference)
 	candidate := candidates[0]
 	if candidate.Endpoint.Currency != currency {
 		return contracts.SupplyReservationResult{}, ErrInvalid
@@ -908,6 +909,59 @@ func (s *MemoryStore) settleSupplyLocked(reservationID string, promptTokens, com
 	s.walletReservations[reservation.ID] = reservation
 	s.supplyUsage[reservation.ID] = usage
 	return contracts.SupplySettlementResult{Wallet: wallet, Reservation: reservation, Usage: usage, ChargedMicros: charged, SupplierMicros: supplier, ReleasedMicros: released}, nil
+}
+
+// rankSupplyCandidatesLocked mirrors supplyPreferenceOrderBy: a stable sort
+// on the preference metric alone, so equally-ranked channels keep the
+// platform-curated default order the caller already applied. Hard gates ran
+// before this — the preference can only reorder, never admit or exclude.
+func (s *MemoryStore) rankSupplyCandidatesLocked(candidates []contracts.SupplyCandidate, preference contracts.SupplyRoutingPreference) {
+	if len(candidates) < 2 {
+		return
+	}
+	var metric func(contracts.SupplyCandidate) float64
+	switch preference {
+	case contracts.SupplyRoutingPriceFirst:
+		metric = func(candidate contracts.SupplyCandidate) float64 {
+			return float64(candidate.Endpoint.InputPriceMicrosPerMillion*2 + candidate.Endpoint.OutputPriceMicrosPerMillion)
+		}
+	case contracts.SupplyRoutingSpeedFirst:
+		since := s.now().Add(-supplyRankingWindow)
+		metric = func(candidate contracts.SupplyCandidate) float64 {
+			_, _, ttftSum, ttftSamples := s.supplyChannelWindowLocked(candidate.Channel.ID, since)
+			return (float64(ttftSum) + supplyRankTTFTPriorMS*supplyRankTTFTPseudoSamples) / (float64(ttftSamples) + supplyRankTTFTPseudoSamples)
+		}
+	case contracts.SupplyRoutingSuccessFirst:
+		since := s.now().Add(-supplyRankingWindow)
+		metric = func(candidate contracts.SupplyCandidate) float64 {
+			requests, failures, _, _ := s.supplyChannelWindowLocked(candidate.Channel.ID, since)
+			return (float64(failures) + supplyRankFailurePseudoFailures) / (float64(requests) + supplyRankFailurePseudoRequests)
+		}
+	default:
+		return
+	}
+	scores := make(map[string]float64, len(candidates))
+	for _, candidate := range candidates {
+		scores[candidate.Channel.ID] = metric(candidate)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return scores[candidates[i].Channel.ID] < scores[candidates[j].Channel.ID]
+	})
+}
+
+// supplyChannelWindowLocked sums a channel's reliability buckets from since
+// onward. Callers hold s.mu.
+func (s *MemoryStore) supplyChannelWindowLocked(channelID string, since time.Time) (requests, failures, ttftSum, ttftSamples int64) {
+	for bucketStart, bucket := range s.supplyChannelStats[channelID] {
+		if bucketStart.Before(since) {
+			continue
+		}
+		requests += bucket.Requests
+		failures += bucket.Failures
+		ttftSum += bucket.TTFTSumMS
+		ttftSamples += bucket.TTFTSamples
+	}
+	return requests, failures, ttftSum, ttftSamples
 }
 
 // recordSupplyChannelStatsLocked mirrors recordSupplyChannelStatsTx: one

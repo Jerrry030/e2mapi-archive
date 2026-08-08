@@ -141,7 +141,9 @@ The platform request enters E2M directly:
    reservation transaction (zero means unlimited, an idempotent replay is
    exempt); exceeding either returns `429 rate_limited`;
 4. select a healthy compatible upstream in the E2M group, skipping channels
-   currently parked by an operator cooldown rule;
+   currently parked by an operator cooldown rule; when the key carries a
+   routing preference, eligible candidates are re-ranked by it first (see
+   below);
 5. rewrite the request body model when the selected channel declares a model
    mapping, then forward while preserving compatible request and response
    semantics, including SSE; usage snapshots keep the requested model;
@@ -160,9 +162,22 @@ channel failures such as transport errors, retryable statuses, and truncated
 streams. Client disconnects and deterministic upstream rejections stay
 neutral, and an idempotent replay never re-counts. Administrators read the
 aggregate through `GET /api/v1/platform/upstreams/{id}/stats`, which reports
-absent rates for an empty window instead of fabricating 0% or 100%. These
-buckets are the evidence base for preference-aware channel ranking; the
-ranking itself is not implemented yet.
+absent rates for an empty window instead of fabricating 0% or 100%.
+
+Key-scoped routing preference shipped on top of those buckets (2026-08-07):
+`virtual_keys.routing_preference` holds one of `smart_auto`, `price_first`,
+`speed_first`, or `success_first`; NULL follows the platform default order,
+so every pre-existing key behaves exactly as before. A preference only
+re-orders candidates that already passed the hard gates — health, cooldown,
+capacity, model, concurrency — and can never re-admit an excluded channel or
+fail an otherwise-servable request. `price_first` sorts by blended sell price
+(prompt weighted twice completion, the hold-ceiling reference shape);
+`speed_first` and `success_first` sort by the last 30 minutes of reliability
+buckets under Bayesian smoothing, so a channel with no evidence ranks
+mid-pack rather than being pinned to the top or bottom by missing data.
+Failure transfer walks the same preference order. There is no editing surface
+yet: the column is written at creation only, and the management API/console
+control ships as its own slice.
 
 `POST /v1/messages` accepts the Anthropic Messages protocol (both `x-api-key`
 and bearer credentials) and bridges it onto the same OpenAI-compatible

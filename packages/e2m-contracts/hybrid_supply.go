@@ -420,6 +420,39 @@ type PaymentCallbackEvent struct {
 	CreatedAt          time.Time          `json:"created_at"`
 }
 
+// SupplyRoutingPreference is a key's routing intent for the platform pool. It
+// shares the owner-preference vocabulary so the product speaks one language.
+// The empty value follows the platform default order. A preference only
+// reorders candidates that already passed every hard gate (health, cooldown,
+// capacity, model, concurrency); it never re-admits an excluded channel and
+// never causes an otherwise-servable request to fail.
+type SupplyRoutingPreference string
+
+const (
+	// SupplyRoutingSmartAuto is the platform-curated default order, identical
+	// to leaving the preference unset.
+	SupplyRoutingSmartAuto SupplyRoutingPreference = "smart_auto"
+	// SupplyRoutingPriceFirst prefers the cheapest blended sell price. The
+	// blend weighs prompt twice completion, matching the hold-ceiling
+	// derivation, so "cheap" means one thing platform-wide.
+	SupplyRoutingPriceFirst SupplyRoutingPreference = "price_first"
+	// SupplyRoutingSpeedFirst prefers the lowest smoothed time-to-first-token.
+	SupplyRoutingSpeedFirst SupplyRoutingPreference = "speed_first"
+	// SupplyRoutingSuccessFirst prefers the lowest smoothed failure rate.
+	SupplyRoutingSuccessFirst SupplyRoutingPreference = "success_first"
+)
+
+// Valid accepts the empty value (follow platform default) and the four
+// product choices.
+func (p SupplyRoutingPreference) Valid() bool {
+	switch p {
+	case "", SupplyRoutingSmartAuto, SupplyRoutingPriceFirst, SupplyRoutingSpeedFirst, SupplyRoutingSuccessFirst:
+		return true
+	default:
+		return false
+	}
+}
+
 type VirtualKey struct {
 	ID     string `json:"id"`
 	UserID int64  `json:"user_id"`
@@ -438,6 +471,10 @@ type VirtualKey struct {
 	Enabled          bool          `json:"enabled"`
 	Models           []string      `json:"models"`
 	DailyLimitMicros int64         `json:"daily_limit_micros"`
+	// RoutingPreference steers candidate ranking for this key's requests.
+	// Empty follows the platform default order, so existing keys and clients
+	// that never set it behave exactly as before.
+	RoutingPreference SupplyRoutingPreference `json:"routing_preference,omitempty"`
 	ExpiresAt        *time.Time    `json:"expires_at,omitempty"`
 	LastUsedAt       *time.Time    `json:"last_used_at,omitempty"`
 	CreatedAt        time.Time     `json:"created_at"`
@@ -448,7 +485,8 @@ func (k VirtualKey) Valid() bool {
 	platformKey := strings.TrimSpace(k.GroupID) != "" && strings.TrimSpace(k.InstanceID) == ""
 	legacyKey := strings.TrimSpace(k.GroupID) == "" && strings.TrimSpace(k.InstanceID) != ""
 	if k.UserID <= 0 || (!platformKey && !legacyKey) || strings.TrimSpace(k.Name) == "" ||
-		!k.ResourceClass.IsPlatformSupply() || k.KeyVersion < 0 || k.DailyLimitMicros < 0 || len(k.Models) > 100 {
+		!k.ResourceClass.IsPlatformSupply() || k.KeyVersion < 0 || k.DailyLimitMicros < 0 || len(k.Models) > 100 ||
+		!k.RoutingPreference.Valid() {
 		return false
 	}
 	for _, model := range k.Models {

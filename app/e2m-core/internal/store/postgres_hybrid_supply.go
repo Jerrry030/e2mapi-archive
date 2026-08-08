@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -247,14 +248,15 @@ func scanWalletJournalTx(ctx context.Context, tx pgx.Tx, journalID string) (cont
 	return journal, rows.Err()
 }
 
-const virtualKeyColumns = `id,user_id,group_id,instance_id,name,resource_class,prefix,token_hash,secret_ref,key_version,enabled,models,daily_limit_micros,expires_at,last_used_at,created_at,updated_at`
+const virtualKeyColumns = `id,user_id,group_id,instance_id,name,resource_class,prefix,token_hash,secret_ref,key_version,enabled,models,daily_limit_micros,expires_at,last_used_at,created_at,updated_at,routing_preference`
 
 func scanVirtualKey(row rowScanner) (contracts.VirtualKey, error) {
 	var key contracts.VirtualKey
 	var models []byte
-	var groupID, instanceID sql.NullString
+	var groupID, instanceID, routingPreference sql.NullString
 	err := row.Scan(&key.ID, &key.UserID, &groupID, &instanceID, &key.Name, &key.ResourceClass, &key.Prefix, &key.TokenHash,
-		&key.SecretRef, &key.KeyVersion, &key.Enabled, &models, &key.DailyLimitMicros, &key.ExpiresAt, &key.LastUsedAt, &key.CreatedAt, &key.UpdatedAt)
+		&key.SecretRef, &key.KeyVersion, &key.Enabled, &models, &key.DailyLimitMicros, &key.ExpiresAt, &key.LastUsedAt, &key.CreatedAt, &key.UpdatedAt,
+		&routingPreference)
 	if err != nil {
 		return contracts.VirtualKey{}, err
 	}
@@ -266,6 +268,9 @@ func scanVirtualKey(row rowScanner) (contracts.VirtualKey, error) {
 	}
 	if instanceID.Valid {
 		key.InstanceID = instanceID.String
+	}
+	if routingPreference.Valid {
+		key.RoutingPreference = contracts.SupplyRoutingPreference(routingPreference.String)
 	}
 	return key, nil
 }
@@ -285,13 +290,14 @@ func (s *PostgresStore) CreateVirtualKey(ctx context.Context, input contracts.Vi
 	}
 	input.Enabled = true
 	key, err := scanVirtualKey(s.pool.QueryRow(ctx, `INSERT INTO virtual_keys
-		(id,user_id,group_id,instance_id,name,resource_class,prefix,token_hash,secret_ref,key_version,enabled,models,daily_limit_micros,expires_at)
-		SELECT $1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14
+		(id,user_id,group_id,instance_id,name,resource_class,prefix,token_hash,secret_ref,key_version,enabled,models,daily_limit_micros,expires_at,routing_preference)
+		SELECT $1,$2,NULLIF($3,''),NULLIF($4,''),$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,NULLIF($15,'')
 		WHERE EXISTS(SELECT 1 FROM users WHERE id=$2 AND enabled AND ('client'=ANY(roles) OR 'admin'=ANY(roles)))
 		  AND (($3<>'' AND $4='' AND EXISTS(SELECT 1 FROM upstream_pools WHERE id=$3 AND delivery_mode='supply_gateway' AND status<>'retired'))
 		    OR ($3='' AND $4<>'' AND EXISTS(SELECT 1 FROM instances WHERE id=$4 AND user_id=$2)))
 		RETURNING `+virtualKeyColumns, input.ID, input.UserID, input.GroupID, input.InstanceID, input.Name, string(input.ResourceClass), input.Prefix,
-		input.TokenHash, input.SecretRef, input.KeyVersion, input.Enabled, string(marshalStrings(input.Models)), input.DailyLimitMicros, input.ExpiresAt))
+		input.TokenHash, input.SecretRef, input.KeyVersion, input.Enabled, string(marshalStrings(input.Models)), input.DailyLimitMicros, input.ExpiresAt,
+		string(input.RoutingPreference)))
 	if isUniqueViolation(err) {
 		return contracts.VirtualKey{}, ErrDuplicate
 	}
@@ -820,7 +826,7 @@ func (s *PostgresStore) ReserveSupplyRequest(ctx context.Context, tokenHash, req
 		if usageErr != nil {
 			return contracts.SupplyReservationResult{}, usageErr
 		}
-		candidate, candidateErr := getSupplyCandidateTx(ctx, tx, key.ResourceClass, model, key.GroupID, reservation.ChannelID, nil, false)
+		candidate, candidateErr := getSupplyCandidateTx(ctx, tx, key.ResourceClass, model, key.GroupID, reservation.ChannelID, nil, key.RoutingPreference, false)
 		if candidateErr != nil {
 			return contracts.SupplyReservationResult{}, candidateErr
 		}
@@ -860,7 +866,7 @@ func (s *PostgresStore) ReserveSupplyRequest(ctx context.Context, tokenHash, req
 			excluded = append(excluded, channelID)
 		}
 	}
-	candidate, err := getSupplyCandidateTx(ctx, tx, key.ResourceClass, model, key.GroupID, "", excluded, true)
+	candidate, err := getSupplyCandidateTx(ctx, tx, key.ResourceClass, model, key.GroupID, "", excluded, key.RoutingPreference, true)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return contracts.SupplyReservationResult{}, ErrNoSupply
@@ -954,23 +960,35 @@ func (s *PostgresStore) ReserveSupplyRequest(ctx context.Context, tokenHash, req
 	return contracts.SupplyReservationResult{Key: key, Candidate: candidate, Wallet: wallet, Reservation: reservation, Usage: usage}, nil
 }
 
-func getSupplyCandidateTx(ctx context.Context, tx pgx.Tx, class contracts.ResourceClass, model, groupID, channelID string, excludedChannelIDs []string, lock bool) (contracts.SupplyCandidate, error) {
+func getSupplyCandidateTx(ctx context.Context, tx pgx.Tx, class contracts.ResourceClass, model, groupID, channelID string, excludedChannelIDs []string, preference contracts.SupplyRoutingPreference, lock bool) (contracts.SupplyCandidate, error) {
 	lockClause := ""
 	if lock {
 		lockClause = " FOR UPDATE OF c,e SKIP LOCKED"
+	}
+	orderBy, needsStats := supplyPreferenceOrderBy(preference)
+	statsJoin := ""
+	args := []any{string(class), model, groupID, channelID, excludedChannelIDs}
+	if needsStats {
+		// The aggregate is a plain LEFT JOIN: a channel without buckets stays
+		// eligible and the COALESCEd smoothing prices it mid-pack. Postgres
+		// rejects bound-but-unreferenced parameters, so $6 exists only when
+		// the ranking actually reads statistics.
+		statsJoin = ` LEFT JOIN (SELECT channel_id,sum(requests) AS requests,sum(failures) AS failures,sum(ttft_sum_ms) AS ttft_sum_ms,sum(ttft_samples) AS ttft_samples
+			FROM supply_channel_stats WHERE bucket_start >= $6 GROUP BY channel_id) s ON s.channel_id=c.id`
+		args = append(args, nowUTC().Add(-supplyRankingWindow))
 	}
 	row := tx.QueryRow(ctx, `SELECT
 		p.id,p.resource_class,p.delivery_mode,p.name,p.provider,p.models,p.region,p.status,p.description,p.labels,p.safety_stock_threshold,p.created_at,p.updated_at,
 		c.id,c.pool_id,c.source_id,c.account_ownership,c.display_name,c.provider,c.models,c.probe_capability,c.probe_endpoint_path,c.groups,c.credential_binding_id,c.proxy_binding_id,c.priority,c.weight,c.cost_hint,c.status,c.inventory_state,c.labels,c.created_at,c.updated_at,
 		e.channel_id,e.base_url,e.allow_insecure,e.secret_ref,e.masked_value,e.currency,e.input_price_micros_per_million,e.output_price_micros_per_million,e.input_supplier_micros_per_million,e.output_supplier_micros_per_million,e.max_request_micros,e.max_concurrency,e.capacity_percent,e.enabled,e.created_at,e.updated_at,
 		(SELECT count(*) FROM wallet_reservations r WHERE r.channel_id=c.id AND r.status='active') AS active_reservations
-		FROM upstream_pools p JOIN upstream_channels c ON c.pool_id=p.id JOIN supply_channel_endpoints e ON e.channel_id=c.id
+		FROM upstream_pools p JOIN upstream_channels c ON c.pool_id=p.id JOIN supply_channel_endpoints e ON e.channel_id=c.id`+statsJoin+`
 		WHERE p.resource_class=$1 AND p.delivery_mode='supply_gateway' AND p.status='active' AND c.status='active' AND c.inventory_state='ready'
 		AND e.enabled AND e.capacity_percent>0 AND ($3='' OR p.id=$3) AND ($4='' OR c.id=$4) AND NOT (c.id=ANY($5::text[]))
 		AND (p.models='[]'::jsonb OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(p.models) m(value) WHERE lower(m.value)=lower($2)))
 		AND (c.models='[]'::jsonb OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(c.models) m(value) WHERE lower(m.value)=lower($2)))
 		AND (e.max_concurrency=0 OR (SELECT count(*) FROM wallet_reservations r WHERE r.channel_id=c.id AND r.status='active') < e.max_concurrency)
-		ORDER BY c.priority ASC,active_reservations ASC,c.weight DESC,c.id LIMIT 1`+lockClause, string(class), model, groupID, channelID, excludedChannelIDs)
+		ORDER BY `+orderBy+` LIMIT 1`+lockClause, args...)
 	candidate, err := scanSupplyCandidate(row)
 	if err != nil {
 		return contracts.SupplyCandidate{}, mapNotFound(err)
@@ -1000,6 +1018,45 @@ func (s *PostgresStore) ReleaseSupplyRequest(ctx context.Context, reservationID,
 // supplyStatsRetention bounds supply_channel_stats growth: every write prunes
 // the same channel's buckets older than this. Reads never look back further.
 const supplyStatsRetention = 14 * 24 * time.Hour
+
+// Preference ranking reads the most recent reliability buckets and smooths
+// them with a Bayesian prior, so a channel with no evidence ranks mid-pack:
+// below channels with a proven record, above channels with a proven problem,
+// and never pinned to the top or bottom by the mere absence of data. The
+// pseudo-counts are the prior's strength; real samples overwhelm them within
+// a handful of requests.
+const (
+	supplyRankingWindow = 30 * time.Minute
+	// Failure smoothing: an unknown channel is assumed to fail 1-in-10.
+	supplyRankFailurePseudoFailures = 1.0
+	supplyRankFailurePseudoRequests = 10.0
+	// TTFT smoothing: an unknown channel is assumed mid-pack at 1500ms.
+	supplyRankTTFTPriorMS       = 1500.0
+	supplyRankTTFTPseudoSamples = 5.0
+)
+
+// supplyPreferenceOrderBy maps a key's routing preference onto the candidate
+// ORDER BY expression, and reports whether it needs the reliability-stats
+// join. The platform-curated default chain always follows as the tie-break,
+// so equally-ranked channels keep their current relative order. Hard gates
+// are untouched: a preference reorders eligible candidates and nothing else.
+func supplyPreferenceOrderBy(preference contracts.SupplyRoutingPreference) (string, bool) {
+	const defaultChain = "c.priority ASC,active_reservations ASC,c.weight DESC,c.id"
+	switch preference {
+	case contracts.SupplyRoutingPriceFirst:
+		// Prompt weighs twice completion — the same 200k:100k reference shape
+		// the hold-ceiling derivation uses, so "cheap" means one thing.
+		return "(e.input_price_micros_per_million*2+e.output_price_micros_per_million) ASC," + defaultChain, false
+	case contracts.SupplyRoutingSpeedFirst:
+		return fmt.Sprintf("((COALESCE(s.ttft_sum_ms,0)+%g)/(COALESCE(s.ttft_samples,0)+%g)) ASC,",
+			supplyRankTTFTPriorMS*supplyRankTTFTPseudoSamples, supplyRankTTFTPseudoSamples) + defaultChain, true
+	case contracts.SupplyRoutingSuccessFirst:
+		return fmt.Sprintf("((COALESCE(s.failures,0)+%g)/(COALESCE(s.requests,0)+%g)) ASC,",
+			supplyRankFailurePseudoFailures, supplyRankFailurePseudoRequests) + defaultChain, true
+	default:
+		return defaultChain, false
+	}
+}
 
 func (s *PostgresStore) finishSupplyRequest(ctx context.Context, reservationID string, promptTokens, completionTokens int64, release, conservative bool, reasonCode string, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
