@@ -1,5 +1,10 @@
 param(
   [string]$ComposeFile = "",
+  # An explicit project name keeps this stack namespaced. Without it, compose
+  # derives the project from the shared templates directory, and a production
+  # stack started from a sibling file in that directory would be adopted into
+  # the same project — where --remove-orphans deletes its containers.
+  [string]$ComposeProject = "e2m-real-gateways",
   [string]$E2MBaseUrl = "http://127.0.0.1:18080",
   [string]$PlatformUpstreamBaseUrl = "http://mock-openai:8093/v1",
   [string]$FailingUpstreamBaseUrl = "http://mock-openai-fail:8093/v1",
@@ -22,7 +27,7 @@ function Write-Step([string]$Message) {
 }
 
 function Invoke-Compose([string[]]$Arguments) {
-  & docker compose -f $ComposeFile @Arguments
+  & docker compose -p $ComposeProject -f $ComposeFile @Arguments
   if ($LASTEXITCODE -ne 0) {
     throw "docker compose failed with exit code $LASTEXITCODE"
   }
@@ -138,7 +143,9 @@ function Create-PlatformUpstream(
   [string]$BaseUrl,
   [string[]]$Models,
   [int]$Priority,
-  [string]$IdempotencyKey
+  [string]$IdempotencyKey,
+  [long]$InputPriceMicrosPerMillion = 1000,
+  [long]$OutputPriceMicrosPerMillion = 2000
 ) {
   $upstreamPayload = @{
     group_id = $GroupID
@@ -154,8 +161,8 @@ function Create-PlatformUpstream(
   }
   foreach ($model in $Models) {
     $upstreamPayload.prices[$model] = @{
-        input_micros_per_million = 1000
-        output_micros_per_million = 2000
+        input_micros_per_million = $InputPriceMicrosPerMillion
+        output_micros_per_million = $OutputPriceMicrosPerMillion
     }
   }
   $response = Invoke-Json "POST" "$E2MBaseUrl/api/v1/platform/upstreams" $upstreamPayload `
@@ -254,7 +261,7 @@ function Verify-Usage([hashtable]$Headers, [long]$UserID) {
 }
 
 function Get-MockEvidence([string]$Service) {
-  $raw = & docker compose -f $ComposeFile exec -T $Service wget -qO- http://127.0.0.1:8093/debug/requests
+  $raw = & docker compose -p $ComposeProject -f $ComposeFile exec -T $Service wget -qO- http://127.0.0.1:8093/debug/requests
   if ($LASTEXITCODE -ne 0) { throw "Could not read request evidence from $Service" }
   return $raw | ConvertFrom-Json
 }
@@ -327,6 +334,110 @@ function Verify-Failover(
   }
 }
 
+function Get-DownstreamKeyID([hashtable]$Headers, [long]$UserID, [string]$KeyName) {
+  $response = Invoke-Json "GET" "$E2MBaseUrl/api/v1/platform/keys?user_id=$UserID" $null $Headers
+  $keys = Get-Data $response "List E2M downstream keys"
+  foreach ($key in @($keys)) {
+    if ([string](Get-Value $key "name") -eq $KeyName) { return [string](Get-Value $key "id") }
+  }
+  throw "Downstream key $KeyName was not found in the key list"
+}
+
+function Set-RoutingPreference([hashtable]$Headers, [long]$UserID, [string]$KeyID, [string]$Preference) {
+  $saved = Invoke-Json "PUT" "$E2MBaseUrl/api/v1/platform/keys/${KeyID}?user_id=$UserID" @{
+    routing_preference = $Preference
+  } $Headers
+  $stored = [string](Get-Value (Get-Data $saved "Update routing preference") "routing_preference")
+  if ($stored -ne $Preference) {
+    throw "Routing preference did not persist: wanted '$Preference', stored '$stored'"
+  }
+}
+
+function Get-UsageRowChannel([hashtable]$Headers, [long]$UserID, [string]$RequestID) {
+  $deadline = (Get-Date).AddSeconds(30)
+  do {
+    $response = Invoke-Json "GET" "$E2MBaseUrl/api/v1/platform/usage?user_id=$UserID&limit=50" $null $Headers
+    $data = Get-Data $response "Read E2M platform usage"
+    $items = Get-Value $data "items"
+    if ($null -eq $items -and $data -is [array]) { $items = $data }
+    foreach ($item in @($items)) {
+      if ([string](Get-Value $item "request_id") -eq $RequestID -and [string](Get-Value $item "status") -eq "settled") {
+        return $item
+      }
+    }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+  throw "Usage ledger did not settle request $RequestID"
+}
+
+function Invoke-TrackedCompletion([string]$APIKey, [string]$Correlation) {
+  $rawResponse = Invoke-WebRequest -UseBasicParsing -Method POST `
+    -Uri "$E2MBaseUrl/v1/chat/completions" `
+    -Headers @{ Authorization = "Bearer $APIKey"; "X-E2M-Correlation" = $Correlation } `
+    -ContentType "application/json; charset=utf-8" `
+    -Body (ConvertTo-JsonBody @{
+      model = "gpt-4o-mini"
+      messages = @(@{ role = "user"; content = "reply with ok" })
+    }) `
+    -TimeoutSec 60
+  $requestID = [string]$rawResponse.Headers["X-E2M-Request-ID"]
+  if ([string]::IsNullOrWhiteSpace($requestID)) {
+    throw "Completion response did not expose X-E2M-Request-ID"
+  }
+  return $requestID
+}
+
+# The routing preference is customer-visible behavior: the same key, the same
+# model, and the same wallet must land on a different channel — and settle at
+# that channel's price — purely because the preference changed. Unit tests
+# cannot prove this wiring; only the ledger can.
+function Verify-RoutingPreference(
+  [hashtable]$Headers,
+  [long]$UserID,
+  [string]$APIKey,
+  [string]$KeyID,
+  [string]$DefaultUpstreamID,
+  [string]$EconomyUpstreamID,
+  [long]$EconomyInputPriceMicrosPerMillion
+) {
+  # A rerun may inherit a preference from an interrupted earlier run; start
+  # from the platform default so the baseline assertion is meaningful.
+  Set-RoutingPreference $Headers $UserID $KeyID ""
+
+  $defaultRequestID = Invoke-TrackedCompletion $APIKey "e2m-local-routing-default"
+  $defaultRow = Get-UsageRowChannel $Headers $UserID $defaultRequestID
+  if ([string](Get-Value $defaultRow "channel_id") -ne $DefaultUpstreamID) {
+    throw "Without a preference the platform default order must select the standard upstream"
+  }
+
+  Set-RoutingPreference $Headers $UserID $KeyID "price_first"
+  $priceRequestID = Invoke-TrackedCompletion $APIKey "e2m-local-routing-price"
+  $priceRow = Get-UsageRowChannel $Headers $UserID $priceRequestID
+  if ([string](Get-Value $priceRow "channel_id") -ne $EconomyUpstreamID) {
+    throw "price_first must route the request to the cheaper economy upstream"
+  }
+  $settledInputPrice = [long](Get-Value $priceRow "input_price_micros_per_million")
+  if ($settledInputPrice -ne $EconomyInputPriceMicrosPerMillion) {
+    throw "price_first settlement must use the economy price; settled at $settledInputPrice"
+  }
+
+  # Clearing the preference restores the exact previous behaviour.
+  Set-RoutingPreference $Headers $UserID $KeyID ""
+  $restoredRequestID = Invoke-TrackedCompletion $APIKey "e2m-local-routing-restored"
+  $restoredRow = Get-UsageRowChannel $Headers $UserID $restoredRequestID
+  if ([string](Get-Value $restoredRow "channel_id") -ne $DefaultUpstreamID) {
+    throw "Clearing the preference must return the key to the platform default order"
+  }
+
+  # The reliability buckets behind speed/success ranking fill from the same
+  # settlements; the admin stats endpoint must show the delivered sample.
+  $stats = Invoke-Json "GET" "$E2MBaseUrl/api/v1/platform/upstreams/$EconomyUpstreamID/stats?window_minutes=60" $null $Headers
+  $statsData = Get-Data $stats "Read economy upstream stats"
+  if ([long](Get-Value $statsData "requests") -lt 1) {
+    throw "Channel statistics did not record the economy upstream's delivered request"
+  }
+}
+
 if (-not $SkipComposeUp) {
   Write-Step "Starting the E2M platform acceptance stack"
   Invoke-Compose @("up", "--build", "-d", "--remove-orphans")
@@ -344,8 +455,16 @@ $failingUpstreamID = Create-PlatformUpstream -Headers $session.Headers -GroupID 
 $successfulUpstreamID = Create-PlatformUpstream -Headers $session.Headers -GroupID $groupID `
   -Name "e2m-local-mock-openai" -BaseUrl $PlatformUpstreamBaseUrl `
   -Models @("gpt-4o-mini", "gpt-e2m-failover") -Priority 10 -IdempotencyKey "e2m-local-mock-upstream-v1"
+# Same mock server, separate channel identity: ten times cheaper at a worse
+# priority, so only a price_first preference can ever select it.
+$economyInputPriceMicrosPerMillion = 100
+$economyUpstreamID = Create-PlatformUpstream -Headers $session.Headers -GroupID $groupID `
+  -Name "e2m-local-mock-openai-economy" -BaseUrl $PlatformUpstreamBaseUrl `
+  -Models @("gpt-4o-mini") -Priority 20 -IdempotencyKey "e2m-local-mock-upstream-economy-v1" `
+  -InputPriceMicrosPerMillion $economyInputPriceMicrosPerMillion -OutputPriceMicrosPerMillion 200
 Add-TestBalance $session.Headers $session.UserID
 $apiKey = Create-DownstreamKey $session.Headers $session.UserID $groupID
+$keyID = Get-DownstreamKeyID $session.Headers $session.UserID "e2m-local-client-v3"
 
 Write-Step "Verifying E2M non-stream and streaming request forwarding"
 Verify-Forwarding $apiKey
@@ -354,10 +473,14 @@ Verify-Usage $session.Headers $session.UserID
 Write-Step "Verifying same-group retryable upstream failure transfer"
 Verify-Failover $session.Headers $session.UserID $apiKey $failingUpstreamID $successfulUpstreamID
 
+Write-Step "Verifying key routing preference steers channel selection and settlement price"
+Verify-RoutingPreference $session.Headers $session.UserID $apiKey $keyID `
+  $successfulUpstreamID $economyUpstreamID $economyInputPriceMicrosPerMillion
+
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 [System.IO.File]::WriteAllText($KeyFile, $apiKey + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 
 Write-Step "Done"
 Write-Host "    E2M product: $E2MBaseUrl"
 Write-Host "    API key:     $KeyFile"
-Write-Host "    Verified:    JSON + SSE, platform usage, and 503 -> second-upstream failover"
+Write-Host "    Verified:    JSON + SSE, platform usage, 503 -> second-upstream failover, and routing-preference channel steering"

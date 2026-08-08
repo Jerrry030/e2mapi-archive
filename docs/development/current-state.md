@@ -232,17 +232,26 @@ four services for the failover acceptance drill:
 The topology deliberately contains no Sub2API service, Sub2API database,
 Sub2API Redis, or externally published mock-upstream port.
 
-`scripts/bootstrap-real-gateways.ps1` starts the stack with
-`--remove-orphans`, logs into E2M, and calls only E2M APIs to create:
+`scripts/bootstrap-real-gateways.ps1` starts the stack under an explicit
+compose project name (`e2m-real-gateways`; without one, compose derives the
+project from the shared templates directory and `--remove-orphans` would
+delete a production stack started from a sibling file), logs into E2M, and
+calls only E2M APIs to create:
 
 - one local platform group;
-- two OpenAI-compatible mock platform upstreams in one group (first 503,
-  second succeeds);
+- three OpenAI-compatible mock platform upstreams in one group: a 503
+  upstream, a standard-priced upstream, and an economy upstream that shares
+  the standard mock server but is ten times cheaper at a worse priority;
 - one idempotent local wallet adjustment;
 - one E2M downstream API key;
 - one non-stream and one stream request through E2M;
 - usage evidence proving the failed reservation was released and the second
-  attempt was settled by E2M.
+  attempt was settled by E2M;
+- routing-preference evidence: the same key lands on the standard upstream
+  without a preference, on the economy upstream (settled at the economy
+  price) under `price_first`, and back on the standard upstream after the
+  preference is cleared, with the admin stats endpoint showing the economy
+  channel's delivered sample.
 
 It writes the bootstrap-retrieved plaintext test key to
 `deployments/runtime/platform-forwarding/downstream.key`. It does not delete
@@ -322,8 +331,9 @@ they are gated by `E2M_ENABLE_PAYMENTS` and closed by default.
 
 The following must not be presented as current accepted work:
 
-- percentage allocation across owner/economy/stable pools;
-- routing-preference overlays or automatic ratio compilation;
+- percentage allocation across owner/economy/stable pools, and automatic
+  ratio compilation (key-scoped routing preferences shipped 2026-08-08 and
+  are no longer out of scope; the pool-ratio machinery remains so);
 - a separately operated Sub2API runtime, UI, admin port, user store, wallet,
   downstream key, database, or Redis;
 - Connector-managed platform upstreams or platform request proxying;
