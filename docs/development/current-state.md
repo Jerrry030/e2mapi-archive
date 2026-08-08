@@ -71,6 +71,7 @@ GET/PUT/DELETE /api/v1/platform/groups/{id}
 GET/POST       /api/v1/platform/upstreams
 GET/PUT/DELETE /api/v1/platform/upstreams/{id}
 POST           /api/v1/platform/upstreams/{id}/test
+GET            /api/v1/platform/upstreams/{id}/stats
 POST /api/v1/platform/keys
 GET  /api/v1/platform/keys/{id}/value
 POST /api/v1/platform/wallet-adjustments
@@ -149,6 +150,19 @@ The platform request enters E2M directly:
    channel; a failure matching the channel's cooldown rules parks that channel
    for the configured duration;
 7. atomically record usage and apply the final charge/refund outcome in E2M.
+
+Every attempt finalization also records data-plane telemetry (2026-08-07):
+the usage row keeps the attempt's time to first upstream byte and total
+duration, and the same settlement transaction adds one sample to the serving
+channel's five-minute reliability bucket (`supply_channel_stats`). Only
+outcomes that say something about the channel count — delivered responses and
+channel failures such as transport errors, retryable statuses, and truncated
+streams. Client disconnects and deterministic upstream rejections stay
+neutral, and an idempotent replay never re-counts. Administrators read the
+aggregate through `GET /api/v1/platform/upstreams/{id}/stats`, which reports
+absent rates for an empty window instead of fabricating 0% or 100%. These
+buckets are the evidence base for preference-aware channel ranking; the
+ranking itself is not implemented yet.
 
 `POST /v1/messages` accepts the Anthropic Messages protocol (both `x-api-key`
 and bearer credentials) and bridges it onto the same OpenAI-compatible

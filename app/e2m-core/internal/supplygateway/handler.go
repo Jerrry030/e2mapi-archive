@@ -27,9 +27,9 @@ const maxRequestBody = 8 << 20
 type Store interface {
 	ListSupplyModels(context.Context, string, string) (contracts.SupplyModelCatalog, error)
 	ReserveSupplyRequest(context.Context, string, string, string, string, []string) (contracts.SupplyReservationResult, error)
-	SettleSupplyRequest(context.Context, string, int64, int64) (contracts.SupplySettlementResult, error)
-	SettleSupplyRequestConservatively(context.Context, string, string) (contracts.SupplySettlementResult, error)
-	ReleaseSupplyRequest(context.Context, string, string) (contracts.SupplySettlementResult, error)
+	SettleSupplyRequest(context.Context, string, int64, int64, contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error)
+	SettleSupplyRequestConservatively(context.Context, string, string, contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error)
+	ReleaseSupplyRequest(context.Context, string, string, contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error)
 }
 
 type Config struct {
@@ -342,7 +342,7 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			channelID = strings.TrimSpace(reserved.Candidate.Endpoint.ChannelID)
 		}
 		if _, alreadyTried := excluded[channelID]; channelID == "" || alreadyTried {
-			_ = finish.release("invalid_failover_candidate")
+			_ = finish.release("invalid_failover_candidate", contracts.SupplyOutcomeNeutral)
 			writeUpstreamsExhausted(w)
 			return
 		}
@@ -355,7 +355,10 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 				_ = response.Body.Close()
 				h.applyCooldownRules(reserved.Candidate.Channel, response.StatusCode, snippet)
 			}
-			if err := finish.release(failureReason); err != nil {
+			// Every failover-eligible reason is evidence the channel could not
+			// serve: transport error, retryable upstream status, or unusable
+			// channel configuration.
+			if err := finish.release(failureReason, contracts.SupplyOutcomeFailure); err != nil {
 				writeError(w, http.StatusServiceUnavailable, "accounting_unavailable", "failed upstream reservation could not be released")
 				return
 			}
@@ -367,8 +370,9 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 
+		response.Body = finish.observeBody(response.Body)
 		defer response.Body.Close()
-		defer finish.releaseIfPending("gateway_aborted")
+		defer finish.releaseIfPending("gateway_aborted", contracts.SupplyOutcomeNeutral)
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			h.proxyJSON(w, response, finish)
 			return
@@ -437,13 +441,16 @@ func writeUpstreamsExhausted(w http.ResponseWriter) {
 
 func (h *Handler) proxyJSON(w http.ResponseWriter, response *http.Response, finish *requestFinalizer) {
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		// A deterministic rejection says nothing reliable about the channel —
+		// the request itself is the usual culprit — so both endings stay
+		// neutral for channel statistics.
 		body, err := io.ReadAll(io.LimitReader(response.Body, maxRequestBody+1))
 		if err != nil || len(body) > maxRequestBody {
-			_ = finish.release("upstream_rejection_unreadable")
+			_ = finish.release("upstream_rejection_unreadable", contracts.SupplyOutcomeNeutral)
 			writeError(w, http.StatusBadGateway, "upstream_error", "upstream rejection could not be read")
 			return
 		}
-		if err := finish.release("upstream_http_non_retryable"); err != nil {
+		if err := finish.release("upstream_http_non_retryable", contracts.SupplyOutcomeNeutral); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "accounting_unavailable", "upstream reservation could not be released")
 			return
 		}
@@ -454,13 +461,16 @@ func (h *Handler) proxyJSON(w http.ResponseWriter, response *http.Response, fini
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxRequestBody+1))
 	if err != nil || len(body) > maxRequestBody {
-		_ = finish.settleConservatively("upstream_response_invalid")
+		_ = finish.settleConservatively("upstream_response_invalid", contracts.SupplyOutcomeFailure)
 		writeError(w, http.StatusBadGateway, "upstream_error", "upstream response could not be read")
 		return
 	}
 	usage, ok := usageFromJSON(body)
 	if !ok {
-		_ = finish.settleConservatively("usage_missing")
+		// The full 2xx document arrived; only the usage block is missing. The
+		// channel served, so the reliability sample is a success even though
+		// billing had to settle conservatively.
+		_ = finish.settleConservatively("usage_missing", contracts.SupplyOutcomeSuccess)
 		writeError(w, http.StatusBadGateway, "usage_missing", "upstream response did not include billable usage")
 		return
 	}
@@ -476,7 +486,7 @@ func (h *Handler) proxyJSON(w http.ResponseWriter, response *http.Response, fini
 func (h *Handler) proxyStream(w http.ResponseWriter, response *http.Response, finish *requestFinalizer) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		_ = finish.settleConservatively("streaming_unsupported")
+		_ = finish.settleConservatively("streaming_unsupported", contracts.SupplyOutcomeNeutral)
 		writeError(w, http.StatusInternalServerError, "streaming_unsupported", "streaming is unavailable")
 		return
 	}
@@ -497,42 +507,96 @@ func (h *Handler) proxyStream(w http.ResponseWriter, response *http.Response, fi
 				doneSeen = true
 			}
 			if _, err := io.WriteString(w, line); err != nil {
-				_ = finish.settleConservatively("client_disconnected")
+				_ = finish.settleConservatively("client_disconnected", contracts.SupplyOutcomeNeutral)
 				return
 			}
 			flusher.Flush()
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
-				_ = finish.settleConservatively("upstream_stream_error")
+				_ = finish.settleConservatively("upstream_stream_error", contracts.SupplyOutcomeFailure)
 				return
 			}
 			break
 		}
 	}
 	if !doneSeen || !usageSeen {
-		_ = finish.settleConservatively("usage_missing")
+		// One billing reason, two different reliability meanings: EOF without
+		// [DONE] is a truncated stream (channel failure); a completed stream
+		// that merely omitted its usage frame still delivered.
+		outcome := contracts.SupplyOutcomeSuccess
+		if !doneSeen {
+			outcome = contracts.SupplyOutcomeFailure
+		}
+		_ = finish.settleConservatively("usage_missing", outcome)
 		return
 	}
 	_ = finish.settleWithFallback(usage, "exact_settlement_failed")
 }
 
 type requestFinalizer struct {
-	h                 *Handler
-	reservationID     string
+	h             *Handler
+	reservationID string
+	// attemptStart anchors this attempt's telemetry. It is set at reservation
+	// time, so the duration covers credential resolution, connection setup and
+	// the upstream exchange — the latency the selected channel actually cost.
+	attemptStart      time.Time
 	mu                sync.Mutex
 	done              bool
 	upstreamSucceeded bool
+	firstByteAt       time.Time
 }
 
 func newRequestFinalizer(h *Handler, reservationID string) *requestFinalizer {
-	return &requestFinalizer{h: h, reservationID: reservationID}
+	return &requestFinalizer{h: h, reservationID: reservationID, attemptStart: time.Now()}
 }
 
 func (f *requestFinalizer) markUpstreamSucceeded() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.upstreamSucceeded = true
+}
+
+// observeBody wraps the upstream response body so the first byte the gateway
+// reads stamps the attempt's time to first token.
+func (f *requestFinalizer) observeBody(body io.ReadCloser) io.ReadCloser {
+	return &firstByteObserver{inner: body, finish: f}
+}
+
+type firstByteObserver struct {
+	inner  io.ReadCloser
+	finish *requestFinalizer
+	seen   bool
+}
+
+func (o *firstByteObserver) Read(p []byte) (int, error) {
+	n, err := o.inner.Read(p)
+	if !o.seen && n > 0 {
+		o.seen = true
+		o.finish.markFirstByte()
+	}
+	return n, err
+}
+
+func (o *firstByteObserver) Close() error { return o.inner.Close() }
+
+func (f *requestFinalizer) markFirstByte() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.firstByteAt.IsZero() {
+		f.firstByteAt = time.Now()
+	}
+}
+
+// telemetryLocked snapshots the attempt's observations. Timings round up to
+// 1ms so an observed sub-millisecond value is never conflated with the zero
+// "not observed" encoding. Callers hold f.mu.
+func (f *requestFinalizer) telemetryLocked(outcome contracts.SupplyTelemetryOutcome) contracts.SupplyTelemetry {
+	telemetry := contracts.SupplyTelemetry{Outcome: outcome, DurationMS: max(time.Since(f.attemptStart).Milliseconds(), 1)}
+	if !f.firstByteAt.IsZero() {
+		telemetry.FirstTokenMS = max(f.firstByteAt.Sub(f.attemptStart).Milliseconds(), 1)
+	}
+	return telemetry
 }
 
 func (f *requestFinalizer) settle(usage tokenUsage) error {
@@ -543,7 +607,7 @@ func (f *requestFinalizer) settle(usage tokenUsage) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), f.h.settleTimeout)
 	defer cancel()
-	_, err := f.h.store.SettleSupplyRequest(ctx, f.reservationID, usage.PromptTokens, usage.CompletionTokens)
+	_, err := f.h.store.SettleSupplyRequest(ctx, f.reservationID, usage.PromptTokens, usage.CompletionTokens, f.telemetryLocked(contracts.SupplyOutcomeSuccess))
 	if err == nil {
 		f.done = true
 	}
@@ -552,14 +616,17 @@ func (f *requestFinalizer) settle(usage tokenUsage) error {
 
 func (f *requestFinalizer) settleWithFallback(usage tokenUsage, fallbackReason string) error {
 	if err := f.settle(usage); err != nil {
-		if fallbackErr := f.settleConservatively(fallbackReason); fallbackErr != nil {
+		// The upstream delivered; only exact accounting failed. The fallback
+		// keeps the success outcome so the channel's statistics reflect what
+		// the channel did, not what our ledger managed.
+		if fallbackErr := f.settleConservatively(fallbackReason, contracts.SupplyOutcomeSuccess); fallbackErr != nil {
 			return errors.Join(err, fallbackErr)
 		}
 	}
 	return nil
 }
 
-func (f *requestFinalizer) settleConservatively(reason string) error {
+func (f *requestFinalizer) settleConservatively(reason string, outcome contracts.SupplyTelemetryOutcome) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.done {
@@ -567,14 +634,14 @@ func (f *requestFinalizer) settleConservatively(reason string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), f.h.settleTimeout)
 	defer cancel()
-	_, err := f.h.store.SettleSupplyRequestConservatively(ctx, f.reservationID, reason)
+	_, err := f.h.store.SettleSupplyRequestConservatively(ctx, f.reservationID, reason, f.telemetryLocked(outcome))
 	if err == nil {
 		f.done = true
 	}
 	return err
 }
 
-func (f *requestFinalizer) release(reason string) error {
+func (f *requestFinalizer) release(reason string, outcome contracts.SupplyTelemetryOutcome) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.done || f.upstreamSucceeded {
@@ -582,14 +649,16 @@ func (f *requestFinalizer) release(reason string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), f.h.settleTimeout)
 	defer cancel()
-	_, err := f.h.store.ReleaseSupplyRequest(ctx, f.reservationID, reason)
+	_, err := f.h.store.ReleaseSupplyRequest(ctx, f.reservationID, reason, f.telemetryLocked(outcome))
 	if err == nil {
 		f.done = true
 	}
 	return err
 }
 
-func (f *requestFinalizer) releaseIfPending(reason string) { _ = f.release(reason) }
+func (f *requestFinalizer) releaseIfPending(reason string, outcome contracts.SupplyTelemetryOutcome) {
+	_ = f.release(reason, outcome)
+}
 
 func withStreamUsage(body []byte) ([]byte, error) {
 	var payload map[string]json.RawMessage

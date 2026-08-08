@@ -145,7 +145,7 @@ func TestListSupplyModelsAgreesWithReservation(t *testing.T) {
 		}
 		if reservable {
 			// Release so the probe does not hold capacity for the next model.
-			if _, err := st.ReleaseSupplyRequest(ctx, result.Reservation.ID, "test_probe"); err != nil {
+			if _, err := st.ReleaseSupplyRequest(ctx, result.Reservation.ID, "test_probe", contracts.SupplyTelemetry{}); err != nil {
 				t.Fatal(err)
 			}
 		}

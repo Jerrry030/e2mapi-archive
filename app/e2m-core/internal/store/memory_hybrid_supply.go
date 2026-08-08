@@ -812,7 +812,7 @@ func tokenCharge(price int64, tokens int64) int64 {
 	return (price*tokens + 999_999) / 1_000_000
 }
 
-func (s *MemoryStore) SettleSupplyRequest(ctx context.Context, reservationID string, promptTokens, completionTokens int64) (contracts.SupplySettlementResult, error) {
+func (s *MemoryStore) SettleSupplyRequest(ctx context.Context, reservationID string, promptTokens, completionTokens int64, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
 	if err := ctx.Err(); err != nil {
 		return contracts.SupplySettlementResult{}, err
 	}
@@ -821,10 +821,10 @@ func (s *MemoryStore) SettleSupplyRequest(ctx context.Context, reservationID str
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.settleSupplyLocked(reservationID, promptTokens, completionTokens, false, false, "metered")
+	return s.settleSupplyLocked(reservationID, promptTokens, completionTokens, false, false, "metered", telemetry)
 }
 
-func (s *MemoryStore) SettleSupplyRequestConservatively(ctx context.Context, reservationID, reasonCode string) (contracts.SupplySettlementResult, error) {
+func (s *MemoryStore) SettleSupplyRequestConservatively(ctx context.Context, reservationID, reasonCode string, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
 	if err := ctx.Err(); err != nil {
 		return contracts.SupplySettlementResult{}, err
 	}
@@ -834,19 +834,19 @@ func (s *MemoryStore) SettleSupplyRequestConservatively(ctx context.Context, res
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.settleSupplyLocked(reservationID, 0, 0, false, true, reasonCode)
+	return s.settleSupplyLocked(reservationID, 0, 0, false, true, reasonCode, telemetry)
 }
 
-func (s *MemoryStore) ReleaseSupplyRequest(ctx context.Context, reservationID, reasonCode string) (contracts.SupplySettlementResult, error) {
+func (s *MemoryStore) ReleaseSupplyRequest(ctx context.Context, reservationID, reasonCode string, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
 	if err := ctx.Err(); err != nil {
 		return contracts.SupplySettlementResult{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.settleSupplyLocked(reservationID, 0, 0, true, false, strings.TrimSpace(reasonCode))
+	return s.settleSupplyLocked(reservationID, 0, 0, true, false, strings.TrimSpace(reasonCode), telemetry)
 }
 
-func (s *MemoryStore) settleSupplyLocked(reservationID string, promptTokens, completionTokens int64, release, conservative bool, reasonCode string) (contracts.SupplySettlementResult, error) {
+func (s *MemoryStore) settleSupplyLocked(reservationID string, promptTokens, completionTokens int64, release, conservative bool, reasonCode string, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
 	reservation, ok := s.walletReservations[reservationID]
 	if !ok {
 		return contracts.SupplySettlementResult{}, ErrNotFound
@@ -883,6 +883,9 @@ func (s *MemoryStore) settleSupplyLocked(reservationID string, promptTokens, com
 	usage.SettledMicros = charged
 	usage.SettlementReason = reasonCode
 	usage.CompletedAt = &now
+	usage.FirstTokenMS = max(telemetry.FirstTokenMS, 0)
+	usage.DurationMS = max(telemetry.DurationMS, 0)
+	s.recordSupplyChannelStatsLocked(usage.ChannelID, telemetry, now)
 	if release {
 		reservation.Status = contracts.WalletReservationReleased
 		usage.Status = contracts.SupplyUsageReleased
@@ -905,6 +908,62 @@ func (s *MemoryStore) settleSupplyLocked(reservationID string, promptTokens, com
 	s.walletReservations[reservation.ID] = reservation
 	s.supplyUsage[reservation.ID] = usage
 	return contracts.SupplySettlementResult{Wallet: wallet, Reservation: reservation, Usage: usage, ChargedMicros: charged, SupplierMicros: supplier, ReleasedMicros: released}, nil
+}
+
+// recordSupplyChannelStatsLocked mirrors recordSupplyChannelStatsTx: one
+// sample per success/failure outcome into the current five-minute bucket,
+// plus a per-channel retention prune. Neutral or empty outcomes write nothing.
+func (s *MemoryStore) recordSupplyChannelStatsLocked(channelID string, telemetry contracts.SupplyTelemetry, now time.Time) {
+	if !telemetry.Outcome.CountsAsSample() || strings.TrimSpace(channelID) == "" {
+		return
+	}
+	buckets := s.supplyChannelStats[channelID]
+	if buckets == nil {
+		buckets = make(map[time.Time]contracts.SupplyChannelStatsBucket)
+		s.supplyChannelStats[channelID] = buckets
+	}
+	start := contracts.SupplyStatsBucketStart(now)
+	bucket := buckets[start]
+	bucket.ChannelID, bucket.BucketStart = channelID, start
+	bucket.Requests++
+	if telemetry.Outcome == contracts.SupplyOutcomeFailure {
+		bucket.Failures++
+	}
+	if telemetry.FirstTokenMS > 0 {
+		bucket.TTFTSumMS += telemetry.FirstTokenMS
+		bucket.TTFTSamples++
+	}
+	if telemetry.DurationMS > 0 {
+		bucket.DurationSumMS += telemetry.DurationMS
+		bucket.DurationSamples++
+	}
+	buckets[start] = bucket
+	cutoff := now.Add(-supplyStatsRetention)
+	for bucketStart := range buckets {
+		if bucketStart.Before(cutoff) {
+			delete(buckets, bucketStart)
+		}
+	}
+}
+
+func (s *MemoryStore) ListSupplyChannelStats(ctx context.Context, channelID string, since time.Time) ([]contracts.SupplyChannelStatsBucket, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" {
+		return nil, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]contracts.SupplyChannelStatsBucket, 0)
+	for bucketStart, bucket := range s.supplyChannelStats[channelID] {
+		if !bucketStart.Before(since) {
+			out = append(out, bucket)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].BucketStart.Before(out[j].BucketStart) })
+	return out, nil
 }
 
 func (s *MemoryStore) appendSupplySettlementJournalLocked(userID int64, currency string, charged, supplier, fromReserved int64, idempotencyKey, referenceType, referenceID string, now time.Time) contracts.WalletJournal {

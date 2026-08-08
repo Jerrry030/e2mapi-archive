@@ -118,7 +118,7 @@ func TestPostgresSettlementAboveHoldWritesAndCarriesDebt(t *testing.T) {
 	// 500_000 prompt tokens cost 500_000 micros: 5x the hold and well past the
 	// 120_000 balance. Before 0082 the two settled<=reserved constraints made
 	// this exact write fail and the caller fell back to undercharging.
-	settled, err := st.SettleSupplyRequest(ctx, reserved.Reservation.ID, 500_000, 0)
+	settled, err := st.SettleSupplyRequest(ctx, reserved.Reservation.ID, 500_000, 0, contracts.SupplyTelemetry{})
 	if err != nil {
 		t.Fatalf("settling above the hold must succeed on a real database: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestPostgresSettlementAboveHoldWritesAndCarriesDebt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a cleared wallet must be usable again: %v", err)
 	}
-	if _, err := st.ReleaseSupplyRequest(ctx, restored.Reservation.ID, "test_cleanup"); err != nil {
+	if _, err := st.ReleaseSupplyRequest(ctx, restored.Reservation.ID, "test_cleanup", contracts.SupplyTelemetry{}); err != nil {
 		t.Fatal(err)
 	}
 	assertJournalsBalanced(t, ctx, st, fx.client.ID)
@@ -215,7 +215,7 @@ func TestPostgresReleaseRestoresTheHoldAndBalancesTheLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	released, err := st.ReleaseSupplyRequest(ctx, reserved.Reservation.ID, "upstream_failed")
+	released, err := st.ReleaseSupplyRequest(ctx, reserved.Reservation.ID, "upstream_failed", contracts.SupplyTelemetry{})
 	if err != nil {
 		t.Fatal(err)
 	}

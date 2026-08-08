@@ -225,7 +225,7 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 			channelID = strings.TrimSpace(reserved.Candidate.Endpoint.ChannelID)
 		}
 		if _, alreadyTried := excluded[channelID]; channelID == "" || alreadyTried {
-			_ = finish.release("invalid_failover_candidate")
+			_ = finish.release("invalid_failover_candidate", contracts.SupplyOutcomeNeutral)
 			writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "all eligible upstream channels failed")
 			return
 		}
@@ -238,7 +238,7 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 				_ = response.Body.Close()
 				h.applyCooldownRules(reserved.Candidate.Channel, response.StatusCode, snippet)
 			}
-			if err := finish.release(failureReason); err != nil {
+			if err := finish.release(failureReason, contracts.SupplyOutcomeFailure); err != nil {
 				writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "failed upstream reservation could not be released")
 				return
 			}
@@ -250,8 +250,9 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		response.Body = finish.observeBody(response.Body)
 		defer response.Body.Close()
-		defer finish.releaseIfPending("gateway_aborted")
+		defer finish.releaseIfPending("gateway_aborted", contracts.SupplyOutcomeNeutral)
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			h.bridgeUpstreamRejection(w, response, finish)
 			return
@@ -273,11 +274,11 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) bridgeUpstreamRejection(w http.ResponseWriter, response *http.Response, finish *requestFinalizer) {
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxRequestBody+1))
 	if err != nil || len(body) > maxRequestBody {
-		_ = finish.release("upstream_rejection_unreadable")
+		_ = finish.release("upstream_rejection_unreadable", contracts.SupplyOutcomeNeutral)
 		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "upstream rejection could not be read")
 		return
 	}
-	if err := finish.release("upstream_http_non_retryable"); err != nil {
+	if err := finish.release("upstream_http_non_retryable", contracts.SupplyOutcomeNeutral); err != nil {
 		writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "upstream reservation could not be released")
 		return
 	}
@@ -298,13 +299,15 @@ func (h *Handler) bridgeUpstreamRejection(w http.ResponseWriter, response *http.
 func (h *Handler) bridgeJSON(w http.ResponseWriter, response *http.Response, finish *requestFinalizer, requestID, model string) {
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxRequestBody+1))
 	if err != nil || len(body) > maxRequestBody {
-		_ = finish.settleConservatively("upstream_response_invalid")
+		_ = finish.settleConservatively("upstream_response_invalid", contracts.SupplyOutcomeFailure)
 		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "upstream response could not be read")
 		return
 	}
 	usage, ok := usageFromJSON(body)
 	if !ok {
-		_ = finish.settleConservatively("usage_missing")
+		// Complete 2xx document without a usage block: the channel served,
+		// billing settles conservatively. Mirrors proxyJSON.
+		_ = finish.settleConservatively("usage_missing", contracts.SupplyOutcomeSuccess)
 		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "upstream response did not include billable usage")
 		return
 	}
@@ -317,7 +320,7 @@ func (h *Handler) bridgeJSON(w http.ResponseWriter, response *http.Response, fin
 		} `json:"choices"`
 	}
 	if json.Unmarshal(body, &parsed) != nil || len(parsed.Choices) == 0 {
-		_ = finish.settleConservatively("upstream_response_invalid")
+		_ = finish.settleConservatively("upstream_response_invalid", contracts.SupplyOutcomeFailure)
 		writeAnthropicError(w, http.StatusBadGateway, "upstream_error", "upstream response could not be translated")
 		return
 	}
@@ -347,7 +350,7 @@ func (h *Handler) bridgeJSON(w http.ResponseWriter, response *http.Response, fin
 func (h *Handler) bridgeStream(w http.ResponseWriter, response *http.Response, finish *requestFinalizer, requestID, model string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		_ = finish.settleConservatively("streaming_unsupported")
+		_ = finish.settleConservatively("streaming_unsupported", contracts.SupplyOutcomeNeutral)
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "streaming is unavailable")
 		return
 	}
@@ -377,7 +380,7 @@ func (h *Handler) bridgeStream(w http.ResponseWriter, response *http.Response, f
 		"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
 		"usage": map[string]int64{"input_tokens": 0, "output_tokens": 0},
 	}}) {
-		_ = finish.settleConservatively("client_disconnected")
+		_ = finish.settleConservatively("client_disconnected", contracts.SupplyOutcomeNeutral)
 		return
 	}
 
@@ -413,14 +416,14 @@ func (h *Handler) bridgeStream(w http.ResponseWriter, response *http.Response, f
 							if !blockStarted {
 								if !emit("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
 									"content_block": map[string]string{"type": "text", "text": ""}}) {
-									_ = finish.settleConservatively("client_disconnected")
+									_ = finish.settleConservatively("client_disconnected", contracts.SupplyOutcomeNeutral)
 									return
 								}
 								blockStarted = true
 							}
 							if !emit("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
 								"delta": map[string]string{"type": "text_delta", "text": text}}) {
-								_ = finish.settleConservatively("client_disconnected")
+								_ = finish.settleConservatively("client_disconnected", contracts.SupplyOutcomeNeutral)
 								return
 							}
 						}
@@ -430,7 +433,7 @@ func (h *Handler) bridgeStream(w http.ResponseWriter, response *http.Response, f
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
-				_ = finish.settleConservatively("upstream_stream_error")
+				_ = finish.settleConservatively("upstream_stream_error", contracts.SupplyOutcomeFailure)
 				emit("error", map[string]any{"type": "error", "error": map[string]string{
 					"type": "upstream_error", "message": "upstream stream ended unexpectedly"}})
 				return
@@ -442,21 +445,28 @@ func (h *Handler) bridgeStream(w http.ResponseWriter, response *http.Response, f
 		}
 	}
 	if !doneSeen || !usageSeen {
-		_ = finish.settleConservatively("usage_missing")
+		// Same split as proxyStream: EOF without [DONE] is a truncated stream
+		// (channel failure); a complete stream missing only its usage frame
+		// still delivered.
+		outcome := contracts.SupplyOutcomeSuccess
+		if !doneSeen {
+			outcome = contracts.SupplyOutcomeFailure
+		}
+		_ = finish.settleConservatively("usage_missing", outcome)
 		emit("error", map[string]any{"type": "error", "error": map[string]string{
 			"type": "upstream_error", "message": "upstream stream did not include billable usage"}})
 		return
 	}
 	if blockStarted {
 		if !emit("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}) {
-			_ = finish.settleConservatively("client_disconnected")
+			_ = finish.settleConservatively("client_disconnected", contracts.SupplyOutcomeNeutral)
 			return
 		}
 	}
 	if !emit("message_delta", map[string]any{"type": "message_delta",
 		"delta": map[string]any{"stop_reason": anthropicStopReason(finishReason), "stop_sequence": nil},
 		"usage": anthropicUsage(usage)}) {
-		_ = finish.settleConservatively("client_disconnected")
+		_ = finish.settleConservatively("client_disconnected", contracts.SupplyOutcomeNeutral)
 		return
 	}
 	emit("message_stop", map[string]any{"type": "message_stop"})

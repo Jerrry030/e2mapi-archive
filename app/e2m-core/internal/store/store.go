@@ -96,9 +96,16 @@ type Store interface {
 	GetSupplyDailyUsage(ctx context.Context, userID int64, instanceID, virtualKeyID, currency string) (contracts.SupplyDailyUsage, error)
 	ListSupplyUsage(ctx context.Context, filter contracts.SupplyUsageFilter) ([]contracts.SupplyUsageRecord, error)
 	ReserveSupplyRequest(ctx context.Context, tokenHash, requestID, model, currency string, excludedChannelIDs []string) (contracts.SupplyReservationResult, error)
-	SettleSupplyRequest(ctx context.Context, reservationID string, promptTokens, completionTokens int64) (contracts.SupplySettlementResult, error)
-	SettleSupplyRequestConservatively(ctx context.Context, reservationID, reasonCode string) (contracts.SupplySettlementResult, error)
-	ReleaseSupplyRequest(ctx context.Context, reservationID, reasonCode string) (contracts.SupplySettlementResult, error)
+	// The three finalizers accept per-attempt telemetry. Timings land on the
+	// usage row; a success/failure outcome additionally adds one sample to the
+	// channel's five-minute reliability bucket inside the same transaction. An
+	// idempotent replay of an already-finalized reservation never re-counts.
+	SettleSupplyRequest(ctx context.Context, reservationID string, promptTokens, completionTokens int64, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error)
+	SettleSupplyRequestConservatively(ctx context.Context, reservationID, reasonCode string, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error)
+	ReleaseSupplyRequest(ctx context.Context, reservationID, reasonCode string, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error)
+	// ListSupplyChannelStats returns the channel's reliability buckets with
+	// bucket_start >= since, oldest first.
+	ListSupplyChannelStats(ctx context.Context, channelID string, since time.Time) ([]contracts.SupplyChannelStatsBucket, error)
 
 	// Supply offers registered by supplier users.
 	CreateSupplyOffer(ctx context.Context, input contracts.SupplyOffer) (contracts.SupplyOffer, error)

@@ -66,6 +66,7 @@ func (s *Server) registerPlatformDistributionRoutes(api *http.ServeMux) {
 	api.HandleFunc("PUT /api/v1/platform/upstreams/{id}", s.handleUpdatePlatformUpstream)
 	api.HandleFunc("DELETE /api/v1/platform/upstreams/{id}", s.handleDeletePlatformUpstream)
 	api.HandleFunc("POST /api/v1/platform/upstreams/{id}/test", s.handleTestPlatformUpstream)
+	api.HandleFunc("GET /api/v1/platform/upstreams/{id}/stats", s.handleGetPlatformUpstreamStats)
 
 	// /keys is the concise public name. /api-keys is retained as an explicit
 	// alias for clients whose resource naming distinguishes login and API keys.

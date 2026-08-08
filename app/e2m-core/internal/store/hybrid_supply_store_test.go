@@ -91,14 +91,14 @@ func TestMemorySupplyReserveSettleAndReleaseAreBalanced(t *testing.T) {
 	if reserved.Key.LastUsedAt == nil {
 		t.Fatal("successful reservation did not update key last_used_at")
 	}
-	settled, err := st.SettleSupplyRequest(ctx, reserved.Reservation.ID, 1_000, 2_000)
+	settled, err := st.SettleSupplyRequest(ctx, reserved.Reservation.ID, 1_000, 2_000, contracts.SupplyTelemetry{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if settled.ChargedMicros != 5_000 || settled.SupplierMicros != 2_500 || settled.ReleasedMicros != 95_000 || settled.Wallet.AvailableMicros != 495_000 || settled.Wallet.ReservedMicros != 0 {
 		t.Fatalf("settled=%+v", settled)
 	}
-	duplicate, err := st.SettleSupplyRequest(ctx, reserved.Reservation.ID, 99, 99)
+	duplicate, err := st.SettleSupplyRequest(ctx, reserved.Reservation.ID, 99, 99, contracts.SupplyTelemetry{})
 	if err != nil || duplicate.ChargedMicros != 5_000 || duplicate.Wallet.AvailableMicros != 495_000 {
 		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
 	}
@@ -106,7 +106,7 @@ func TestMemorySupplyReserveSettleAndReleaseAreBalanced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	released, err := st.ReleaseSupplyRequest(ctx, reserved2.Reservation.ID, "upstream_failed")
+	released, err := st.ReleaseSupplyRequest(ctx, reserved2.Reservation.ID, "upstream_failed", contracts.SupplyTelemetry{})
 	if err != nil || released.ReleasedMicros != 100_000 || released.Wallet.AvailableMicros != 495_000 || released.Wallet.ReservedMicros != 0 {
 		t.Fatalf("released=%+v err=%v", released, err)
 	}
@@ -189,7 +189,7 @@ func TestMemorySettlementChargesTrueCostAndCarriesDebt(t *testing.T) {
 	}
 	// 150_000 prompt tokens at 1_000_000 micros per million = 150_000 micros,
 	// which is 1.5x the hold.
-	settled, err := st.SettleSupplyRequest(ctx, reserved.Reservation.ID, 150_000, 0)
+	settled, err := st.SettleSupplyRequest(ctx, reserved.Reservation.ID, 150_000, 0, contracts.SupplyTelemetry{})
 	if err != nil {
 		t.Fatalf("settling above the hold must succeed when funds remain: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestMemorySettlementChargesTrueCostAndCarriesDebt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settled2, err := st2.SettleSupplyRequest(ctx, reserved2.Reservation.ID, 500_000, 0)
+	settled2, err := st2.SettleSupplyRequest(ctx, reserved2.Reservation.ID, 500_000, 0, contracts.SupplyTelemetry{})
 	if err != nil {
 		t.Fatalf("settling beyond the balance must still settle: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestMemoryReserveEnforcesUserPlatformLimits(t *testing.T) {
 	if _, err := st.ReserveSupplyRequest(ctx, tokenHash, "limit-request-1", "gpt-test", "CNY", nil); err != nil {
 		t.Fatalf("replay of the active reservation must pass: %v", err)
 	}
-	if _, err := st.SettleSupplyRequest(ctx, first.Reservation.ID, 100, 100); err != nil {
+	if _, err := st.SettleSupplyRequest(ctx, first.Reservation.ID, 100, 100, contracts.SupplyTelemetry{}); err != nil {
 		t.Fatalf("settle: %v", err)
 	}
 
@@ -418,7 +418,7 @@ func TestMemoryPlatformKeyStaysInsideItsGroupAndSnapshotsPrices(t *testing.T) {
 	if _, err = st.UpsertSupplyChannelEndpoint(ctx, endpointA1); err != nil {
 		t.Fatal(err)
 	}
-	settled, err := st.SettleSupplyRequest(ctx, reserved.Reservation.ID, 1_000, 1_000)
+	settled, err := st.SettleSupplyRequest(ctx, reserved.Reservation.ID, 1_000, 1_000, contracts.SupplyTelemetry{})
 	if err != nil || settled.ChargedMicros != 5_000 {
 		t.Fatalf("price snapshot was not used: %+v err=%v", settled, err)
 	}

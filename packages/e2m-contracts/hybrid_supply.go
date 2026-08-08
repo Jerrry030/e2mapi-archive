@@ -513,6 +513,12 @@ type SupplyUsageRecord struct {
 	Model                          string            `json:"model"`
 	PromptTokens                   int64             `json:"prompt_tokens"`
 	CompletionTokens               int64             `json:"completion_tokens"`
+	// FirstTokenMS and DurationMS are the attempt's observed time to first
+	// upstream body byte and total wall time. Zero means "not observed" (the
+	// attempt failed before a byte arrived, or the record predates telemetry),
+	// never "instant".
+	FirstTokenMS                   int64             `json:"first_token_ms,omitempty"`
+	DurationMS                     int64             `json:"duration_ms,omitempty"`
 	ReservedMicros                 int64             `json:"reserved_micros"`
 	SettledMicros                  int64             `json:"settled_micros"`
 	Status                         SupplyUsageStatus `json:"status"`
@@ -658,4 +664,63 @@ type SupplySettlementResult struct {
 	ChargedMicros  int64             `json:"charged_micros"`
 	SupplierMicros int64             `json:"supplier_micros"`
 	ReleasedMicros int64             `json:"released_micros"`
+}
+
+// SupplyTelemetryOutcome classifies one upstream attempt for channel
+// reliability statistics. Billing already records *why* an attempt ended
+// (settlement_reason); the outcome records whether that ending says anything
+// about the channel's quality. Neutral endings — the client hung up, the
+// upstream deterministically rejected the request — carry no reliability
+// signal and must not move a channel's success rate in either direction.
+type SupplyTelemetryOutcome string
+
+const (
+	// SupplyOutcomeSuccess counts toward the channel's delivered requests.
+	SupplyOutcomeSuccess SupplyTelemetryOutcome = "success"
+	// SupplyOutcomeFailure counts as a channel failure (transport error,
+	// retryable upstream status, broken stream, unusable configuration).
+	SupplyOutcomeFailure SupplyTelemetryOutcome = "failure"
+	// SupplyOutcomeNeutral records timings on the usage row without adding a
+	// reliability sample. The zero value "" behaves identically.
+	SupplyOutcomeNeutral SupplyTelemetryOutcome = "neutral"
+)
+
+// CountsAsSample reports whether the outcome adds a reliability observation.
+func (o SupplyTelemetryOutcome) CountsAsSample() bool {
+	return o == SupplyOutcomeSuccess || o == SupplyOutcomeFailure
+}
+
+// SupplyTelemetry carries one attempt's observations into settlement. Timings
+// of zero mean "not observed" and are stored as absent, never as 0ms.
+type SupplyTelemetry struct {
+	FirstTokenMS int64                  `json:"first_token_ms,omitempty"`
+	DurationMS   int64                  `json:"duration_ms,omitempty"`
+	Outcome      SupplyTelemetryOutcome `json:"outcome,omitempty"`
+}
+
+// SupplyStatsBucket is the fixed aggregation window for channel reliability
+// statistics. Five minutes matches the scheduler's freshness horizon: long
+// enough to smooth single-request noise, short enough that a recovering or
+// degrading channel changes rank within minutes.
+const SupplyStatsBucket = 5 * time.Minute
+
+// SupplyStatsBucketStart floors a timestamp onto its bucket boundary in UTC.
+func SupplyStatsBucketStart(t time.Time) time.Time {
+	return t.UTC().Truncate(SupplyStatsBucket)
+}
+
+// SupplyChannelStatsBucket is one five-minute reliability bucket for one
+// channel. Requests counts only success/failure samples; neutral endings are
+// excluded by design, so Requests can legitimately be far below the channel's
+// billed traffic. TTFT and duration keep sums with their own sample counts
+// because a failed attempt contributes a duration but usually no first byte.
+type SupplyChannelStatsBucket struct {
+	ChannelID       string    `json:"channel_id"`
+	BucketStart     time.Time `json:"bucket_start"`
+	Requests        int64     `json:"requests"`
+	Failures        int64     `json:"failures"`
+	TTFTSumMS       int64     `json:"ttft_sum_ms"`
+	TTFTSamples     int64     `json:"ttft_samples"`
+	DurationSumMS   int64     `json:"duration_sum_ms"`
+	DurationSamples int64     `json:"duration_samples"`
 }

@@ -18,23 +18,26 @@ import (
 )
 
 type fakeStore struct {
-	mu                 sync.Mutex
-	reservation        contracts.SupplyReservationResult
-	reservations       []contracts.SupplyReservationResult
-	reserveHashes      []string
-	reserveRequestIDs  []string
-	reserveExclusions  [][]string
-	settled            []tokenUsage
-	conservativeReason []string
-	releasedReason     []string
-	reserveErr         error
-	settleErr          error
-	conservativeErr    error
-	releaseErr         error
-	catalog            contracts.SupplyModelCatalog
-	catalogHashes      []string
-	catalogCurrencies  []string
-	catalogErr         error
+	mu                    sync.Mutex
+	reservation           contracts.SupplyReservationResult
+	reservations          []contracts.SupplyReservationResult
+	reserveHashes         []string
+	reserveRequestIDs     []string
+	reserveExclusions     [][]string
+	settled               []tokenUsage
+	settledTelemetry      []contracts.SupplyTelemetry
+	conservativeReason    []string
+	conservativeTelemetry []contracts.SupplyTelemetry
+	releasedReason        []string
+	releasedTelemetry     []contracts.SupplyTelemetry
+	reserveErr            error
+	settleErr             error
+	conservativeErr       error
+	releaseErr            error
+	catalog               contracts.SupplyModelCatalog
+	catalogHashes         []string
+	catalogCurrencies     []string
+	catalogErr            error
 }
 
 func (f *fakeStore) ListSupplyModels(_ context.Context, hash, currency string) (contracts.SupplyModelCatalog, error) {
@@ -67,24 +70,27 @@ func (f *fakeStore) ReserveSupplyRequest(_ context.Context, hash, requestID, _, 
 	return f.reservation, f.reserveErr
 }
 
-func (f *fakeStore) SettleSupplyRequest(_ context.Context, _ string, prompt, completion int64) (contracts.SupplySettlementResult, error) {
+func (f *fakeStore) SettleSupplyRequest(_ context.Context, _ string, prompt, completion int64, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.settled = append(f.settled, tokenUsage{PromptTokens: prompt, CompletionTokens: completion})
+	f.settledTelemetry = append(f.settledTelemetry, telemetry)
 	return contracts.SupplySettlementResult{}, f.settleErr
 }
 
-func (f *fakeStore) SettleSupplyRequestConservatively(_ context.Context, _, reason string) (contracts.SupplySettlementResult, error) {
+func (f *fakeStore) SettleSupplyRequestConservatively(_ context.Context, _, reason string, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.conservativeReason = append(f.conservativeReason, reason)
+	f.conservativeTelemetry = append(f.conservativeTelemetry, telemetry)
 	return contracts.SupplySettlementResult{}, f.conservativeErr
 }
 
-func (f *fakeStore) ReleaseSupplyRequest(_ context.Context, _, reason string) (contracts.SupplySettlementResult, error) {
+func (f *fakeStore) ReleaseSupplyRequest(_ context.Context, _, reason string, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.releasedReason = append(f.releasedReason, reason)
+	f.releasedTelemetry = append(f.releasedTelemetry, telemetry)
 	return contracts.SupplySettlementResult{}, f.releaseErr
 }
 
@@ -527,3 +533,99 @@ func TestGatewayUsesNativeE2MGroupKeyWalletAndUsage(t *testing.T) {
 }
 
 var _ Store = (*fakeStore)(nil)
+
+// A delivered response is a success sample carrying both timings; the failed
+// attempt before it is a failure sample whose first byte was never observed.
+func TestGatewayTelemetryRecordsTimingsAndOutcomes(t *testing.T) {
+	var calls int
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprint(w, `{"error":"busy"}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"usage":{"prompt_tokens":2,"completion_tokens":3},"choices":[]}`)
+	}))
+	defer upstream.Close()
+	h, fake := newGatewayForTest(t, upstream)
+	second := fake.reservation
+	second.Reservation.ID = "reservation-2"
+	second.Candidate.Channel.ID = "channel-2"
+	second.Candidate.Endpoint.ChannelID = "channel-2"
+	fake.reservations = []contracts.SupplyReservationResult{fake.reservation, second}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test"}`))
+	req.Header.Set("Authorization", "Bearer e2m_v1_downstream")
+	recorder := httptest.NewRecorder()
+	h.Routes().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK || len(fake.releasedTelemetry) != 1 || len(fake.settledTelemetry) != 1 {
+		t.Fatalf("response=%d released=%+v settled=%+v", recorder.Code, fake.releasedTelemetry, fake.settledTelemetry)
+	}
+	failed := fake.releasedTelemetry[0]
+	if failed.Outcome != contracts.SupplyOutcomeFailure || failed.DurationMS < 1 || failed.FirstTokenMS != 0 {
+		t.Fatalf("failed attempt telemetry=%+v", failed)
+	}
+	delivered := fake.settledTelemetry[0]
+	if delivered.Outcome != contracts.SupplyOutcomeSuccess || delivered.FirstTokenMS < 1 || delivered.DurationMS < delivered.FirstTokenMS {
+		t.Fatalf("delivered attempt telemetry=%+v", delivered)
+	}
+}
+
+// A deterministic upstream rejection is forwarded, and its reliability sample
+// must stay neutral: the request, not the channel, is the usual culprit.
+func TestGatewayTelemetryNeutralOnDeterministicRejection(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"invalid prompt"}}`)
+	}))
+	defer upstream.Close()
+	h, fake := newGatewayForTest(t, upstream)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test"}`))
+	req.Header.Set("Authorization", "Bearer e2m_v1_downstream")
+	recorder := httptest.NewRecorder()
+	h.Routes().ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest || len(fake.releasedTelemetry) != 1 {
+		t.Fatalf("response=%d released=%+v", recorder.Code, fake.releasedTelemetry)
+	}
+	if fake.releasedTelemetry[0].Outcome != contracts.SupplyOutcomeNeutral {
+		t.Fatalf("rejection telemetry=%+v", fake.releasedTelemetry[0])
+	}
+}
+
+// One settlement reason, two reliability meanings: a stream that ends without
+// [DONE] was truncated by the channel (failure); a complete stream that only
+// omitted its usage frame still delivered (success).
+func TestGatewayTelemetrySplitsUsageMissingByStreamCompletion(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		outcome contracts.SupplyTelemetryOutcome
+	}{
+		{"truncated stream", "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n", contracts.SupplyOutcomeFailure},
+		{"complete stream without usage", "data: {\"choices\":[{\"delta\":{\"content\":\"full\"}}]}\n\ndata: [DONE]\n\n", contracts.SupplyOutcomeSuccess},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(w, testCase.body)
+			}))
+			defer upstream.Close()
+			h, fake := newGatewayForTest(t, upstream)
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-test","stream":true}`))
+			req.Header.Set("Authorization", "Bearer e2m_v1_downstream")
+			recorder := httptest.NewRecorder()
+			h.Routes().ServeHTTP(recorder, req)
+
+			if len(fake.conservativeReason) != 1 || fake.conservativeReason[0] != "usage_missing" || len(fake.conservativeTelemetry) != 1 {
+				t.Fatalf("conservative=%v telemetry=%+v", fake.conservativeReason, fake.conservativeTelemetry)
+			}
+			if fake.conservativeTelemetry[0].Outcome != testCase.outcome || fake.conservativeTelemetry[0].FirstTokenMS < 1 {
+				t.Fatalf("telemetry=%+v want outcome=%s", fake.conservativeTelemetry[0], testCase.outcome)
+			}
+		})
+	}
+}

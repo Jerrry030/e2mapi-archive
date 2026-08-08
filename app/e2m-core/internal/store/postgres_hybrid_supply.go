@@ -694,7 +694,7 @@ func scanSupplyCandidate(row rowScanner) (contracts.SupplyCandidate, error) {
 const reservationColumns = `id,user_id,virtual_key_id,channel_id,request_id,currency,reserved_micros,settled_micros,status,created_at,updated_at`
 const supplyUsageColumns = `id,request_id,reservation_id,user_id,group_id,instance_id,virtual_key_id,resource_class,channel_id,model,
 	input_price_micros_per_million,output_price_micros_per_million,input_supplier_micros_per_million,output_supplier_micros_per_million,
-	prompt_tokens,completion_tokens,reserved_micros,settled_micros,status,settlement_reason,created_at,completed_at`
+	prompt_tokens,completion_tokens,first_token_ms,duration_ms,reserved_micros,settled_micros,status,settlement_reason,created_at,completed_at`
 
 func scanWalletReservation(row rowScanner) (contracts.WalletReservation, error) {
 	var reservation contracts.WalletReservation
@@ -707,9 +707,11 @@ func scanWalletReservation(row rowScanner) (contracts.WalletReservation, error) 
 func scanSupplyUsage(row rowScanner) (contracts.SupplyUsageRecord, error) {
 	var usage contracts.SupplyUsageRecord
 	var groupID, instanceID sql.NullString
+	var firstTokenMS, durationMS sql.NullInt64
 	err := row.Scan(&usage.ID, &usage.RequestID, &usage.ReservationID, &usage.UserID, &groupID, &instanceID, &usage.VirtualKeyID,
 		&usage.ResourceClass, &usage.ChannelID, &usage.Model, &usage.InputPriceMicrosPerMillion, &usage.OutputPriceMicrosPerMillion,
 		&usage.InputSupplierMicrosPerMillion, &usage.OutputSupplierMicrosPerMillion, &usage.PromptTokens, &usage.CompletionTokens,
+		&firstTokenMS, &durationMS,
 		&usage.ReservedMicros, &usage.SettledMicros, &usage.Status, &usage.SettlementReason, &usage.CreatedAt, &usage.CompletedAt)
 	if err != nil {
 		return contracts.SupplyUsageRecord{}, err
@@ -719,6 +721,12 @@ func scanSupplyUsage(row rowScanner) (contracts.SupplyUsageRecord, error) {
 	}
 	if instanceID.Valid {
 		usage.InstanceID = instanceID.String
+	}
+	if firstTokenMS.Valid {
+		usage.FirstTokenMS = firstTokenMS.Int64
+	}
+	if durationMS.Valid {
+		usage.DurationMS = durationMS.Int64
 	}
 	return usage, nil
 }
@@ -970,26 +978,30 @@ func getSupplyCandidateTx(ctx context.Context, tx pgx.Tx, class contracts.Resour
 	return candidate, nil
 }
 
-func (s *PostgresStore) SettleSupplyRequest(ctx context.Context, reservationID string, promptTokens, completionTokens int64) (contracts.SupplySettlementResult, error) {
+func (s *PostgresStore) SettleSupplyRequest(ctx context.Context, reservationID string, promptTokens, completionTokens int64, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
 	if promptTokens < 0 || completionTokens < 0 {
 		return contracts.SupplySettlementResult{}, ErrInvalid
 	}
-	return s.finishSupplyRequest(ctx, reservationID, promptTokens, completionTokens, false, false, "metered")
+	return s.finishSupplyRequest(ctx, reservationID, promptTokens, completionTokens, false, false, "metered", telemetry)
 }
 
-func (s *PostgresStore) SettleSupplyRequestConservatively(ctx context.Context, reservationID, reasonCode string) (contracts.SupplySettlementResult, error) {
+func (s *PostgresStore) SettleSupplyRequestConservatively(ctx context.Context, reservationID, reasonCode string, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
 	reasonCode = strings.TrimSpace(reasonCode)
 	if reasonCode == "" || len(reasonCode) > 64 {
 		return contracts.SupplySettlementResult{}, ErrInvalid
 	}
-	return s.finishSupplyRequest(ctx, reservationID, 0, 0, false, true, reasonCode)
+	return s.finishSupplyRequest(ctx, reservationID, 0, 0, false, true, reasonCode, telemetry)
 }
 
-func (s *PostgresStore) ReleaseSupplyRequest(ctx context.Context, reservationID, reasonCode string) (contracts.SupplySettlementResult, error) {
-	return s.finishSupplyRequest(ctx, reservationID, 0, 0, true, false, strings.TrimSpace(reasonCode))
+func (s *PostgresStore) ReleaseSupplyRequest(ctx context.Context, reservationID, reasonCode string, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
+	return s.finishSupplyRequest(ctx, reservationID, 0, 0, true, false, strings.TrimSpace(reasonCode), telemetry)
 }
 
-func (s *PostgresStore) finishSupplyRequest(ctx context.Context, reservationID string, promptTokens, completionTokens int64, release, conservative bool, reasonCode string) (contracts.SupplySettlementResult, error) {
+// supplyStatsRetention bounds supply_channel_stats growth: every write prunes
+// the same channel's buckets older than this. Reads never look back further.
+const supplyStatsRetention = 14 * 24 * time.Hour
+
+func (s *PostgresStore) finishSupplyRequest(ctx context.Context, reservationID string, promptTokens, completionTokens int64, release, conservative bool, reasonCode string, telemetry contracts.SupplyTelemetry) (contracts.SupplySettlementResult, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return contracts.SupplySettlementResult{}, err
@@ -1041,9 +1053,12 @@ func (s *PostgresStore) finishSupplyRequest(ctx context.Context, reservationID s
 	if err != nil {
 		return contracts.SupplySettlementResult{}, err
 	}
-	usage, err = scanSupplyUsage(tx.QueryRow(ctx, `UPDATE supply_usage_records SET prompt_tokens=$2,completion_tokens=$3,settled_micros=$4,status=$5,settlement_reason=$6,completed_at=$7 WHERE reservation_id=$1 RETURNING `+supplyUsageColumns,
-		reservation.ID, promptTokens, completionTokens, charged, string(usageStatus), reasonCode, now))
+	usage, err = scanSupplyUsage(tx.QueryRow(ctx, `UPDATE supply_usage_records SET prompt_tokens=$2,completion_tokens=$3,settled_micros=$4,status=$5,settlement_reason=$6,completed_at=$7,first_token_ms=NULLIF($8::bigint,0),duration_ms=NULLIF($9::bigint,0) WHERE reservation_id=$1 RETURNING `+supplyUsageColumns,
+		reservation.ID, promptTokens, completionTokens, charged, string(usageStatus), reasonCode, now, max(telemetry.FirstTokenMS, 0), max(telemetry.DurationMS, 0)))
 	if err != nil {
+		return contracts.SupplySettlementResult{}, err
+	}
+	if err := recordSupplyChannelStatsTx(ctx, tx, usage.ChannelID, telemetry, now); err != nil {
 		return contracts.SupplySettlementResult{}, err
 	}
 	if release {
@@ -1066,4 +1081,65 @@ func (s *PostgresStore) finishSupplyRequest(ctx context.Context, reservationID s
 		return contracts.SupplySettlementResult{}, err
 	}
 	return contracts.SupplySettlementResult{Wallet: wallet, Reservation: reservation, Usage: usage, ChargedMicros: charged, SupplierMicros: supplier, ReleasedMicros: released}, nil
+}
+
+// recordSupplyChannelStatsTx adds one reliability sample to the channel's
+// current five-minute bucket and prunes that channel's expired buckets. It
+// runs inside the settlement transaction, so a sample exists exactly when its
+// finalized usage row does. Neutral or empty outcomes write nothing.
+func recordSupplyChannelStatsTx(ctx context.Context, tx pgx.Tx, channelID string, telemetry contracts.SupplyTelemetry, now time.Time) error {
+	if !telemetry.Outcome.CountsAsSample() || strings.TrimSpace(channelID) == "" {
+		return nil
+	}
+	failures, ttftSum, ttftSamples, durationSum, durationSamples := int64(0), int64(0), int64(0), int64(0), int64(0)
+	if telemetry.Outcome == contracts.SupplyOutcomeFailure {
+		failures = 1
+	}
+	if telemetry.FirstTokenMS > 0 {
+		ttftSum, ttftSamples = telemetry.FirstTokenMS, 1
+	}
+	if telemetry.DurationMS > 0 {
+		durationSum, durationSamples = telemetry.DurationMS, 1
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO supply_channel_stats(channel_id,bucket_start,requests,failures,ttft_sum_ms,ttft_samples,duration_sum_ms,duration_samples,updated_at)
+		VALUES($1,$2,1,$3,$4,$5,$6,$7,$8)
+		ON CONFLICT (channel_id,bucket_start) DO UPDATE SET
+			requests=supply_channel_stats.requests+1,
+			failures=supply_channel_stats.failures+EXCLUDED.failures,
+			ttft_sum_ms=supply_channel_stats.ttft_sum_ms+EXCLUDED.ttft_sum_ms,
+			ttft_samples=supply_channel_stats.ttft_samples+EXCLUDED.ttft_samples,
+			duration_sum_ms=supply_channel_stats.duration_sum_ms+EXCLUDED.duration_sum_ms,
+			duration_samples=supply_channel_stats.duration_samples+EXCLUDED.duration_samples,
+			updated_at=EXCLUDED.updated_at`,
+		channelID, contracts.SupplyStatsBucketStart(now), failures, ttftSum, ttftSamples, durationSum, durationSamples, now); err != nil {
+		return err
+	}
+	// Per-channel prune keeps the delete on the primary-key prefix and bounds
+	// the table without a dedicated sweeper worker.
+	_, err := tx.Exec(ctx, `DELETE FROM supply_channel_stats WHERE channel_id=$1 AND bucket_start < $2`,
+		channelID, now.Add(-supplyStatsRetention))
+	return err
+}
+
+func (s *PostgresStore) ListSupplyChannelStats(ctx context.Context, channelID string, since time.Time) ([]contracts.SupplyChannelStatsBucket, error) {
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" {
+		return nil, ErrInvalid
+	}
+	rows, err := s.pool.Query(ctx, `SELECT channel_id,bucket_start,requests,failures,ttft_sum_ms,ttft_samples,duration_sum_ms,duration_samples
+		FROM supply_channel_stats WHERE channel_id=$1 AND bucket_start >= $2 ORDER BY bucket_start ASC`, channelID, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]contracts.SupplyChannelStatsBucket, 0)
+	for rows.Next() {
+		var bucket contracts.SupplyChannelStatsBucket
+		if err := rows.Scan(&bucket.ChannelID, &bucket.BucketStart, &bucket.Requests, &bucket.Failures,
+			&bucket.TTFTSumMS, &bucket.TTFTSamples, &bucket.DurationSumMS, &bucket.DurationSamples); err != nil {
+			return nil, err
+		}
+		out = append(out, bucket)
+	}
+	return out, rows.Err()
 }

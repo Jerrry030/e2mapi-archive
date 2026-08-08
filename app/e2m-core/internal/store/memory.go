@@ -31,6 +31,7 @@ type MemoryStore struct {
 	virtualKeys                     map[string]contracts.VirtualKey
 	supplyEndpoints                 map[string]contracts.SupplyChannelEndpoint
 	supplyUsage                     map[string]contracts.SupplyUsageRecord
+	supplyChannelStats              map[string]map[time.Time]contracts.SupplyChannelStatsBucket
 	paymentCallbackEvents           map[string]contracts.PaymentCallbackEvent
 	supplyOffers                    []contracts.SupplyOffer
 	supplyLedger                    []contracts.SupplyLedgerEntry
@@ -114,6 +115,7 @@ func NewMemoryStore(startedAt time.Time) *MemoryStore {
 		virtualKeys:                    make(map[string]contracts.VirtualKey),
 		supplyEndpoints:                make(map[string]contracts.SupplyChannelEndpoint),
 		supplyUsage:                    make(map[string]contracts.SupplyUsageRecord),
+		supplyChannelStats:             make(map[string]map[time.Time]contracts.SupplyChannelStatsBucket),
 		paymentCallbackEvents:          make(map[string]contracts.PaymentCallbackEvent),
 		upstreamIntelVersions:          make(map[int64]contracts.UpstreamIntelligenceFactVersion),
 		upstreamIntelFactMutations:     make(map[int64][]UpstreamIntelligenceFactMutation),
