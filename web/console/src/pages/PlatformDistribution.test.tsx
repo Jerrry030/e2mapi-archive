@@ -50,8 +50,15 @@ function mockMatchMedia() {
 }
 
 function mockPlatformAPI(options: { admin?: boolean } = {}) {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
+    if (url.endsWith(`/platform/api-keys/${platformKey.id}`) && init?.method === 'PUT') {
+      const body = JSON.parse(String(init.body ?? '{}')) as { routing_preference?: string }
+      return response({
+        ...platformKey,
+        routing_preference: body.routing_preference || undefined,
+      })
+    }
     if (url.endsWith('/users')) {
       return response([
         {
@@ -152,6 +159,42 @@ afterEach(() => {
   } else {
     Reflect.deleteProperty(window.navigator, 'clipboard')
   }
+})
+
+describe('PlatformDistribution routing preference', () => {
+  it('shows the platform default, saves a choice from the drawer, and reflects it', async () => {
+    setSession('owner-token', {
+      id: 7,
+      email: 'owner-one@example.com',
+      roles: ['client'],
+      enabled: true,
+    })
+    const fetchMock = mockPlatformAPI()
+    renderPlatformDistribution()
+
+    // A key that never chose a preference reads as the platform default.
+    expect(await screen.findByText('平台默认')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /智能路由/ }))
+    await screen.findByRole('radiogroup', { name: '路由偏好' })
+    // Unset behaves as smart_auto, so that card renders selected.
+    expect(screen.getByRole('radio', { name: /智能自动/ }).getAttribute('aria-checked')).toBe('true')
+
+    fireEvent.click(screen.getByRole('radio', { name: /价格优先/ }))
+
+    await waitFor(() => {
+      const putCalls = fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')
+      expect(putCalls).toHaveLength(1)
+      expect(String(putCalls[0][0])).toBe(`/api/v1/platform/api-keys/${platformKey.id}`)
+      expect(JSON.parse(String(putCalls[0][1]?.body))).toEqual({ routing_preference: 'price_first' })
+    })
+    // The drawer reflects the saved key returned by the server.
+    await waitFor(() =>
+      expect(screen.getByRole('radio', { name: /价格优先/ }).getAttribute('aria-checked')).toBe(
+        'true',
+      ),
+    )
+  })
 })
 
 describe('PlatformDistribution API key display and copy', () => {

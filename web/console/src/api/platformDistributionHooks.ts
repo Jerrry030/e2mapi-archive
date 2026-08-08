@@ -114,6 +114,21 @@ export function useCreatePlatformKey() {
   return usePlatformMutation(endpoints.createPlatformKey, 'API Key 已创建')
 }
 
+export function useUpdatePlatformKey() {
+  return usePlatformMutation(
+    ({
+      id,
+      userId,
+      input,
+    }: {
+      id: string
+      userId?: number
+      input: import('./endpoints').PlatformKeyUpdateInput
+    }) => endpoints.updatePlatformKey(id, input, userId),
+    'API Key 已更新',
+  )
+}
+
 export function usePlatformKeyValue() {
   const { message } = App.useApp()
   return useMutation({

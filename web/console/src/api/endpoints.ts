@@ -225,6 +225,17 @@ export interface PlatformKeyInput {
   status?: 'active' | 'disabled'
 }
 
+export interface PlatformKeyUpdateInput {
+  name?: string
+  models?: string[]
+  daily_limit_micros?: number
+  enabled?: boolean
+  status?: 'active' | 'disabled'
+  expires_at?: string | null
+  /** Four product choices; the empty string clears back to the platform default. */
+  routing_preference?: import('./types').PlatformRoutingPreference | ''
+}
+
 export interface PlatformWalletAdjustmentInput {
   user_id: number
   amount_micros: number
@@ -301,6 +312,12 @@ export const endpoints = {
     }),
   getPlatformKeyValue: (id: string, userId?: number) =>
     apiClient.request<{ value: string }>(`/platform/api-keys/${id}/value`, {
+      query: { user_id: userId },
+    }),
+  updatePlatformKey: (id: string, body: PlatformKeyUpdateInput, userId?: number) =>
+    apiClient.request<PlatformApiKey>(`/platform/api-keys/${id}`, {
+      method: 'PUT',
+      body,
       query: { user_id: userId },
     }),
   getPlatformWallet: (userId?: number) =>

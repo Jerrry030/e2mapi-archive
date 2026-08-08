@@ -344,10 +344,11 @@ func (s *PostgresStore) UpdateVirtualKey(ctx context.Context, input contracts.Vi
 	if !input.Valid() {
 		return contracts.VirtualKey{}, ErrInvalid
 	}
-	key, err := scanVirtualKey(s.pool.QueryRow(ctx, `UPDATE virtual_keys SET name=$3,enabled=$4,models=$5::jsonb,daily_limit_micros=$6,expires_at=$7,updated_at=statement_timestamp()
+	key, err := scanVirtualKey(s.pool.QueryRow(ctx, `UPDATE virtual_keys SET name=$3,enabled=$4,models=$5::jsonb,daily_limit_micros=$6,expires_at=$7,routing_preference=NULLIF($14,''),updated_at=statement_timestamp()
 		WHERE id=$1 AND user_id=$2 AND group_id IS NOT DISTINCT FROM NULLIF($8,'') AND instance_id IS NOT DISTINCT FROM NULLIF($9,'') AND resource_class=$10 AND token_hash=$11 AND secret_ref=$12 AND key_version=$13 RETURNING `+virtualKeyColumns,
 		input.ID, input.UserID, strings.TrimSpace(input.Name), input.Enabled, string(marshalStrings(input.Models)), input.DailyLimitMicros,
-		input.ExpiresAt, input.GroupID, input.InstanceID, string(input.ResourceClass), input.TokenHash, input.SecretRef, input.KeyVersion))
+		input.ExpiresAt, input.GroupID, input.InstanceID, string(input.ResourceClass), input.TokenHash, input.SecretRef, input.KeyVersion,
+		string(input.RoutingPreference)))
 	if isUniqueViolation(err) {
 		return contracts.VirtualKey{}, ErrDuplicate
 	}

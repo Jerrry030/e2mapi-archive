@@ -983,6 +983,9 @@ type platformKeyUpdateRequest struct {
 	Enabled          *bool       `json:"enabled,omitempty"`
 	Status           *string     `json:"status,omitempty"`
 	ExpiresAt        **time.Time `json:"expires_at,omitempty"`
+	// RoutingPreference accepts the four product choices or the empty string,
+	// which clears the key back to the platform default order.
+	RoutingPreference *string `json:"routing_preference,omitempty"`
 }
 
 func (s *Server) handleListPlatformKeys(w http.ResponseWriter, r *http.Request) {
@@ -1200,6 +1203,15 @@ func (s *Server) handleUpdatePlatformKey(w http.ResponseWriter, r *http.Request)
 	if input.ExpiresAt != nil {
 		key.ExpiresAt = *input.ExpiresAt
 	}
+	previousPreference := key.RoutingPreference
+	if input.RoutingPreference != nil {
+		preference := contracts.SupplyRoutingPreference(strings.TrimSpace(*input.RoutingPreference))
+		if !preference.Valid() {
+			writeError(w, http.StatusBadRequest, "validation_failed", "routing_preference must be smart_auto, price_first, speed_first, success_first, or empty to follow the platform default")
+			return
+		}
+		key.RoutingPreference = preference
+	}
 	if strings.TrimSpace(key.Name) == "" || key.DailyLimitMicros < 0 || !validPlatformModels(key.Models) {
 		writeError(w, http.StatusBadRequest, "validation_failed", "name, models, or daily_limit_micros are invalid")
 		return
@@ -1210,6 +1222,11 @@ func (s *Server) handleUpdatePlatformKey(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	_ = s.auditPlatformCustomer(r, userID, "platform_key.update", "virtual_key", saved.ID)
+	if saved.RoutingPreference != previousPreference {
+		// The preference steers which channel serves and therefore what the
+		// request costs, so the change gets its own audit trail entry.
+		_ = s.auditPlatformCustomer(r, userID, "platform_key.routing_preference.update", "virtual_key", saved.ID)
+	}
 	writeJSON(w, http.StatusOK, saved)
 }
 

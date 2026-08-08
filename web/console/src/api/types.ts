@@ -821,6 +821,9 @@ export interface PlatformWallet {
   updated_at: string
 }
 
+/** Per-key routing intent for the platform pool; absent = platform default order. */
+export type PlatformRoutingPreference = 'smart_auto' | 'price_first' | 'speed_first' | 'success_first'
+
 export interface PlatformApiKey {
   id: string
   user_id: number
@@ -832,6 +835,7 @@ export interface PlatformApiKey {
   enabled: boolean
   models: string[]
   daily_limit_micros: number
+  routing_preference?: PlatformRoutingPreference
   expires_at?: string
   last_used_at?: string
   created_at: string

@@ -7,6 +7,7 @@ import {
   Card,
   Col,
   DatePicker,
+  Drawer,
   Form,
   Input,
   InputNumber,
@@ -23,6 +24,7 @@ import {
   CopyOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
+  NodeIndexOutlined,
   PlusOutlined,
   ReloadOutlined,
 } from '@ant-design/icons'
@@ -36,9 +38,13 @@ import {
   usePlatformKeyValue,
   usePlatformUsage,
   usePlatformWallet,
+  useUpdatePlatformKey,
 } from '../api/platformDistributionHooks'
 import type { PlatformKeyInput } from '../api/endpoints'
-import type { PlatformApiKey, PlatformUsage } from '../api/types'
+import type { PlatformApiKey, PlatformRoutingPreference, PlatformUsage } from '../api/types'
+import RoutingPreferenceSelector, {
+  routingPreferenceLabels,
+} from '../components/RoutingPreferenceSelector'
 
 const yuan = (micros: number) => `¥${(micros / 1_000_000).toFixed(2)}`
 
@@ -61,8 +67,11 @@ export default function PlatformDistribution() {
   const createKey = useCreatePlatformKey()
   const keyValue = usePlatformKeyValue()
   const adjustWallet = useAdjustPlatformWallet()
+  const updateKey = useUpdatePlatformKey()
   const [keyOpen, setKeyOpen] = useState(false)
   const [adjustOpen, setAdjustOpen] = useState(false)
+  const [routingKey, setRoutingKey] = useState<PlatformApiKey | null>(null)
+  const [savingPreference, setSavingPreference] = useState<PlatformRoutingPreference>()
   const [visibleKeyValues, setVisibleKeyValues] = useState<Record<string, string>>({})
   const [keyForm] = Form.useForm()
   const [adjustForm] = Form.useForm()
@@ -124,6 +133,19 @@ export default function PlatformDistribution() {
   const copyKeyValue = async (key: PlatformApiKey) => {
     const value = await loadKeyValue(key)
     await copy(value)
+  }
+  const saveRoutingPreference = async (key: PlatformApiKey, preference: PlatformRoutingPreference) => {
+    setSavingPreference(preference)
+    try {
+      const saved = await updateKey.mutateAsync({
+        id: key.id,
+        userId: admin ? targetUserId : undefined,
+        input: { routing_preference: preference },
+      })
+      setRoutingKey(saved)
+    } finally {
+      setSavingPreference(undefined)
+    }
   }
 
   if (!admin && !user) return null
@@ -295,10 +317,28 @@ export default function PlatformDistribution() {
                   render: (v: number) => (v ? yuan(v) : '不限'),
                 },
                 {
+                  title: '路由偏好',
+                  dataIndex: 'routing_preference',
+                  render: (v: PlatformRoutingPreference | undefined) =>
+                    v ? <Tag color="blue">{routingPreferenceLabels[v]}</Tag> : <Tag>平台默认</Tag>,
+                },
+                {
                   title: '状态',
                   dataIndex: 'enabled',
                   render: (v: boolean) => (
                     <Tag color={v ? 'green' : 'default'}>{v ? '启用' : '停用'}</Tag>
+                  ),
+                },
+                {
+                  title: '操作',
+                  render: (_, row) => (
+                    <Button
+                      size="small"
+                      icon={<NodeIndexOutlined />}
+                      onClick={() => setRoutingKey(row)}
+                    >
+                      智能路由
+                    </Button>
                   ),
                 },
               ]}
@@ -329,6 +369,31 @@ export default function PlatformDistribution() {
         />
       </ProCard>
 
+      <Drawer
+        title={routingKey ? `智能路由 · ${routingKey.name}` : '智能路由'}
+        open={Boolean(routingKey)}
+        onClose={() => setRoutingKey(null)}
+        width={560}
+      >
+        {routingKey ? (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message="系统始终优先保障可用性：异常渠道会被自动跳过，偏好只在可用渠道之间调整先后顺序。"
+            />
+            <RoutingPreferenceSelector
+              value={routingKey.routing_preference}
+              savingValue={savingPreference}
+              disabled={updateKey.isPending}
+              onSelect={(preference) => void saveRoutingPreference(routingKey, preference)}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              选择即保存，对该 Key 的后续请求立即生效。不同渠道售价可能不同，偏好会影响实际扣费单价。
+            </Typography.Text>
+          </Space>
+        ) : null}
+      </Drawer>
       <Modal
         title="创建下游 API Key"
         open={keyOpen}

@@ -175,9 +175,15 @@ fail an otherwise-servable request. `price_first` sorts by blended sell price
 `speed_first` and `success_first` sort by the last 30 minutes of reliability
 buckets under Bayesian smoothing, so a channel with no evidence ranks
 mid-pack rather than being pinned to the top or bottom by missing data.
-Failure transfer walks the same preference order. There is no editing surface
-yet: the column is written at creation only, and the management API/console
-control ships as its own slice.
+Failure transfer walks the same preference order. The preference is edited
+through `PUT /api/v1/platform/keys/{id}` (`routing_preference`: one of the
+four values, or the empty string to clear back to the platform default) under
+the usual customer/admin ownership rules, and through a row-level 智能路由
+drawer on the platform-distribution key table. Because the preference steers
+which channel serves and therefore what a request costs, every actual change
+appends a `platform_key.routing_preference.update` audit entry alongside the
+generic key-update audit, and the drawer copy states that the choice can
+select a more expensive channel.
 
 `POST /v1/messages` accepts the Anthropic Messages protocol (both `x-api-key`
 and bearer credentials) and bridges it onto the same OpenAI-compatible
