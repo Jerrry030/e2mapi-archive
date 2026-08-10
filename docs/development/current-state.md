@@ -1,6 +1,13 @@
 # Current Implementation State
 
-Updated: 2026-08-04
+Updated: 2026-08-09
+
+> **退役声明（2026-08-09）**：本仓库已停止迭代，基座迁往 `e2m-platform`。本文
+> 描述的一切**在退役时刻是准确的**——它记录的是这套代码实际能做什么，而不是
+> 计划做什么，因此对日后的移植参考仍然有效。但它**不再随时间更新**：`e2m-platform`
+> 的现状以那边的 `e2m/docs/capability-surpass-execution-plan.md` 为准。搬家已完成
+> 的两项（Connector 控制面、密钥级路由偏好）在 fork 上有各自的设计与验收文档；
+> 本文的商业化章节（Platform Commerce）是尚未移植部分的权威描述。
 
 This document defines the factual product and runtime baseline for the current
 E2M vertical slice. Older roadmap, progress, ADR, architecture, migration, and
