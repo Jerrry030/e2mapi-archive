@@ -23,7 +23,7 @@ jobs:
             app/e2m-core/go.sum
             app/e2m-agent/go.mod
             packages/e2m-contracts/go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
