@@ -65,7 +65,7 @@ jobs:
             type=raw,value=latest
 
       - name: publish e2m-agent image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: app/e2m-agent/Dockerfile

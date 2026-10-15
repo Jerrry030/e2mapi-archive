@@ -150,7 +150,7 @@ jobs:
             fi
           done
       - name: build e2m-core image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: app/e2m-core/Dockerfile
@@ -160,7 +160,7 @@ jobs:
           cache-from: type=gha,scope=e2m-core
           cache-to: type=gha,mode=max,scope=e2m-core
       - name: build e2m-agent image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: app/e2m-agent/Dockerfile
