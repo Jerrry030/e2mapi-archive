@@ -34,7 +34,7 @@ jobs:
         working-directory: app/e2m-core
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
           cache-dependency-path: app/e2m-core/go.sum
@@ -63,7 +63,7 @@ jobs:
         working-directory: app/e2m-agent
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
           cache-dependency-path: app/e2m-agent/go.mod
@@ -85,7 +85,7 @@ jobs:
         working-directory: packages/e2m-contracts
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.work
       - name: go vet
